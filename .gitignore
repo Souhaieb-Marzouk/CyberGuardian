@@ -96,8 +96,6 @@ secrets.json
 *.exe
 
 # Yara rules (user downloaded)
-yara_rules/*.yar
-yara_rules/*.yara
 !yara_rules/.gitkeep
 
 # Temporary files
