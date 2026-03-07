@@ -482,4 +482,4 @@ Before distributing:
 
 ---
 
-*For issues, check the troubleshooting section above or visit: https://github.com/YOUR_USERNAME/CyberGuardian/issues*
+*For issues, check the troubleshooting section above or visit: [https://github.com/Souhaieb-Marzouk/CyberGuardian/issues](https://github.com/Souhaieb-Marzouk/CyberGuardian/issues)*
