@@ -84,6 +84,13 @@ logs/
 *.log
 quarantine/
 config.json
+build.py
+CyberGuardian.spec
+install_deps.py
+run.bat
+setup.py
+setup_windows.bat
+version_info.txt
 secure/
 .credentials
 
