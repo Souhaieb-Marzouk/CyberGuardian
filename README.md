@@ -69,6 +69,283 @@ CyberGuardian solves this by providing:
 - 📝 **Comprehensive Reporting** — HTML export with full analysis details
 - 🔐 **Secure API Storage** — System credential manager integration for API keys
 
+---
+
+## 🔬 Detection Methods Deep Dive
+
+CyberGuardian employs multiple layers of detection across all scanners. Understanding these methods helps you interpret results and hunt for threats more effectively.
+
+### 🖥️ Process Analysis — 6 Detection Methods
+
+The Process Scanner analyzes all running processes on your system using six complementary detection techniques:
+
+#### 1. YARA Memory Scanning
+YARA rules are pattern-matching signatures that detect known malware families. When a process runs, CyberGuardian scans its executable file against a database of malware signatures. Matches are categorized by severity:
+- **Critical**: Known malware families (Emotet, TrickBot, Cobalt Strike, etc.)
+- **High**: Suspicious patterns with strong malicious indicators
+- **Medium**: Potentially unwanted patterns requiring investigation
+
+#### 2. Behavioral Heuristics
+Analyzes parent-child process relationships to detect suspicious execution chains. Examples:
+- Microsoft Word spawning PowerShell or CMD (document macro attack)
+- Excel launching command-line tools
+- Browsers spawning shells
+- Notepad or Calculator making unexpected child processes
+
+This catches **fileless malware** and **living-off-the-land** attacks that evade signature-based detection.
+
+#### 3. Hash Reputation Lookup
+Calculates SHA-256 hashes of running executables and checks them against VirusTotal's database of 70+ antivirus engines. Results include:
+- Detection ratio (e.g., 45/72 engines)
+- Threat names assigned by each vendor
+- First submission date and last analysis
+
+#### 4. Digital Signature Verification
+Verifies whether executables are digitally signed by trusted publishers:
+- Checks if the signature is valid and from a recognized Certificate Authority
+- Flags unsigned executables running from non-system paths (Temp, AppData, Downloads)
+- Identifies processes masquerading as legitimate software with invalid signatures
+
+#### 5. Resource Usage Monitoring
+Detects cryptominers and resource-hijacking malware by analyzing:
+- CPU usage exceeding 50% sustained
+- Memory usage exceeding 30% sustained
+- Processes with high resource usage but no visible window
+
+A process using 80% CPU with no user interface is a strong cryptominer indicator.
+
+#### 6. Command-Line Analysis
+Inspects process command lines for suspicious patterns:
+- **Encoded PowerShell commands**: `-enc`, `-encodedcommand` with Base64 strings
+- **Hidden windows**: `-w hidden`, `-windowstyle hidden`
+- **Download cradles**: `DownloadString`, `Net.WebClient`, `Invoke-Expression`
+- **LOLBAS execution**: Certutil downloads, BITS transfers, WMIC process creation
+- **Remote execution**: MSHTA with HTTP URLs, Regsvr32 with remote scripts
+
+---
+
+### 📁 File Analysis — 7 Detection Methods
+
+The File Scanner performs comprehensive static analysis on files and folders:
+
+#### 1. YARA Static Scanning
+Matches file contents against YARA malware signatures. Supports custom rules in `data/yara_rules/` for extending detection capabilities.
+
+#### 2. Entropy Analysis
+Calculates Shannon entropy to detect packed or encrypted content:
+- **Entropy > 7.0**: High suspicion - likely packed, encrypted, or compressed
+- **Normal entropy (5.0-6.5)**: Typical for legitimate executables
+- Malware often uses packing to evade signature detection
+
+#### 3. PE (Portable Executable) Analysis
+Examines Windows executable structure for suspicious characteristics:
+- **Suspicious imports**: `VirtualAlloc`, `WriteProcessMemory`, `CreateRemoteThread` (process injection indicators)
+- **Packed sections**: UPX, ASPack, MPRESS, VMProtect detection
+- **High entropy sections**: Sections with entropy > 7.0 indicate packing
+- **TLS callbacks**: Potential anti-debug/anti-analysis techniques
+
+#### 4. Office Document Analysis
+Scans Microsoft Office files for malicious content:
+- **Macro detection**: Identifies VBA macros in documents
+- **Suspicious VBA patterns**: `CreateObject`, `Shell`, `PowerShell`, `AutoOpen`, `DownloadFile`
+- **Embedded objects**: OLE objects and external links
+- **OLE stream analysis**: Examines document structure for hidden payloads
+
+#### 5. Steganography Detection
+Detects hidden data embedded in images:
+- **LSB (Least Significant Bit) analysis**: 1-bit, 2-bit, and 4-bit plane examination
+- **EOF appended data**: Data hidden after legitimate image end markers
+- **Embedded file signatures**: PE executables, ZIP archives hidden in images
+- **Malicious patterns in extracted data**: URLs, IPs, executables, PowerShell scripts
+
+This catches malware that hides payloads in innocent-looking images.
+
+#### 6. Hash Reputation Checking
+Calculates file hashes (MD5, SHA-256) and checks against VirusTotal:
+- Determines if files are known malware
+- Provides detection ratio and threat names
+- Caches results for performance
+
+#### 7. Suspicious Path Detection
+Flags files in high-risk locations:
+- Temporary folders (`%TEMP%`, `AppData\Local\Temp`)
+- User directories (`Downloads`, `Desktop`)
+- Public folders (`C:\Users\Public`)
+- Programs running from unexpected locations
+
+---
+
+### 📝 Registry Analysis — 20+ Persistence Locations
+
+The Registry Scanner examines Windows registry persistence mechanisms:
+
+#### Persistence Locations Monitored
+CyberGuardian scans **20+ autorun locations** including:
+- **Run/RunOnce keys**: Programs executed at user logon
+- **Services**: Malicious Windows services
+- **Winlogon**: Logon process modifications
+- **Image File Execution Options (IFEO)**: Debugger injection attacks
+- **AppInit DLLs**: DLL injection via registry
+- **Shell Extensions**: Explorer shell modifications
+- **Browser Helper Objects (BHO)**: Browser hijacking
+- **Active Setup**: Component installation at logon
+- **Session Manager**: Boot-time execution
+- **Scheduled Tasks Registry**: Task cache analysis
+
+#### Detection Methods
+
+1. **Suspicious Pattern Detection**: Scans registry values for:
+   - Encoded PowerShell commands
+   - Hidden window execution
+   - LOLBAS execution (Certutil, BITSAdmin, Regsvr32, MSHTA)
+   - Download cradles and remote execution
+   - Execution from Temp/AppData/Public folders
+   - Malware references (Mimikatz, Meterpreter, Cobalt Strike)
+
+2. **YARA Rule Matching**: Applies malware signatures to registry values
+
+3. **Entropy Analysis**: Detects Base64-encoded or encrypted payloads in registry
+
+4. **IFEO Debugger Injection**: Critical detection for a stealthy persistence technique where malware makes itself run whenever a legitimate program is launched
+
+5. **Service Path Hijacking**: Identifies services pointing to non-standard or user-writable locations
+
+---
+
+### 🌐 Network Analysis — Comprehensive Connection Intelligence
+
+The Network Scanner provides deep visibility into network activity:
+
+#### Standard Detection Methods
+
+1. **Threat Intelligence Integration**
+   - Real-time IP reputation checking against VirusTotal and AbuseIPDB
+   - Domain reputation analysis
+   - Abuse confidence scores and report counts
+   - Country/geolocation data
+
+2. **Suspicious Port Detection**
+   Flags connections to ports commonly used by malware:
+   - **4444, 4443**: Metasploit default ports
+   - **5555, 6666, 8888, 9999**: Common backdoor ports
+   - **12345, 12346**: NetBus trojan
+   - **31337**: Elite/Backdoor port
+   - **6667**: IRC (botnet communication)
+   - **3389, 5900**: RDP/VNC (check for unauthorized exposure)
+
+3. **Process Correlation**
+   - Links every connection to its owning process
+   - Identifies processes that shouldn't make network connections (Notepad, Calculator, Paint)
+   - Provides full command line and executable path
+
+4. **Beaconing Detection**
+   - Analyzes connection timing patterns
+   - Detects regular intervals suggesting C2 heartbeat
+   - Identifies periodic connections to suspicious hosts
+
+5. **Exposed Service Detection**
+   - Identifies services listening on all interfaces (0.0.0.0)
+   - Flags sensitive services exposed externally (RDP, VNC, SSH)
+
+#### Deep Analysis Mode
+
+When Deep Analysis is enabled, additional forensics are performed:
+
+6. **DNS Cache Analysis**
+   - Examines cached DNS entries
+   - Identifies connections to malicious domains
+   - Detects DNS hijacking attempts
+
+7. **ARP Table Inspection**
+   - Lists MAC address mappings
+   - Identifies ARP spoofing attempts
+   - Detects unknown devices on the network
+
+8. **Network Adapter Information**
+   - Lists all network interfaces
+   - Identifies unexpected adapters
+   - Monitors interface statistics
+
+9. **Hosts File Analysis**
+   - Checks for DNS redirection
+   - Identifies malicious hosts entries
+
+---
+
+### 🧠 AI-Powered Analysis
+
+When you request AI analysis on a detection, CyberGuardian sends comprehensive evidence to your chosen LLM provider (DeepSeek, OpenAI, or Gemini):
+
+#### Information Sent to AI
+- Detection type and risk level
+- File paths, command lines, registry keys
+- Network connection details
+- Process relationships
+- YARA rule matches
+- **VirusTotal IOC results** (automatically included)
+
+#### AI Response Structure
+```
+{
+  "verdict": "malicious|suspicious|legitimate|needs_investigation",
+  "confidence": 0.85,
+  "risk_score": 75,
+  "summary": "Executive summary of the threat",
+  "detailed_analysis": "Technical deep-dive analysis",
+  "recommendations": ["Step-by-step remediation"],
+  "indicators": ["IOCs and suspicious behaviors"],
+  "threat_type": "malware|apt|ransomware|trojan|backdoor|pua",
+  "mitre_techniques": ["T1059.001", "T1055", ...]
+}
+```
+
+#### VirusTotal IOC Integration
+Before AI analysis, CyberGuardian automatically extracts and checks:
+- **File hashes** (SHA-256, MD5)
+- **IP addresses** from connections and command lines
+- **Domains** from URLs and network strings
+- **URLs** from process memory and command lines
+
+Results are included in the AI analysis prompt, providing cross-referenced intelligence from 70+ antivirus engines.
+
+---
+
+### ⚡ Real-Time Monitoring
+
+Enable Real-Time Monitoring for continuous protection:
+
+#### What's Monitored
+
+1. **New Process Creation**
+   - Immediate analysis of every new process
+   - Automatic memory analysis for high-risk processes (PowerShell, CMD, MSHTA, etc.)
+   - Detection of code injection in running processes
+   - IOC extraction from process memory
+
+2. **File System Changes**
+   - Monitors user directories, Downloads, Desktop, Temp folders
+   - Analyzes new and modified files
+   - Supports both watchdog (event-based) and polling modes
+
+3. **Registry Modifications**
+   - Monitors all autorun locations for changes
+   - Immediate analysis of new persistence entries
+   - Detects IFEO debugger injections in real-time
+
+4. **Network Connections**
+   - Detects new outbound connections
+   - Threat intelligence lookup for every new IP/domain
+   - Memory analysis for processes with suspicious connections
+   - Beaconing pattern detection
+
+#### Alert System
+- Popup notifications for detections
+- Configurable alert duration and sound
+- Tray icon with status indication
+- Event logging for investigation
+
+---
+
 ### What's New in v1.1.0
 
 - ✅ **Enhanced AI Response Parsing** — Robust JSON extraction with fallback handling
@@ -277,7 +554,7 @@ Manage whitelisted items in **Settings → Whitelist** or directly edit `data/wh
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](https://github.com/Souhaieb-Marzouk/CyberGuardian/blob/main/CONTRIBUTING.md) for guidelines.
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Ways to Contribute
 
@@ -326,7 +603,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](https://github.com/Souha
 
 ## 📜 License
 
-This project is licensed under the MIT License - see the [LICENSE](https://github.com/Souhaieb-Marzouk/CyberGuardian/blob/main/LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
