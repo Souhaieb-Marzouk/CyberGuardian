@@ -90,6 +90,10 @@ class RealTimeMonitor:
         self._threads: List[threading.Thread] = []
         self._stop_events: Dict[str, threading.Event] = {}
         
+        # Baseline initialization tracking
+        self._baselines_initialized = False
+        self._baseline_lock = threading.Lock()
+        
         # Callbacks
         self._detection_callback: Optional[Callable[[Detection], None]] = None
         self._event_callback: Optional[Callable[[MonitorEvent], None]] = None
@@ -147,8 +151,16 @@ class RealTimeMonitor:
         self._running = True
         logger.info(f"Starting real-time monitoring for: {monitor_types}")
         
-        # Initialize baselines
-        self._initialize_baselines()
+        # Initialize baselines in a background thread to avoid UI freeze
+        baseline_thread = threading.Thread(
+            target=self._initialize_baselines,
+            name='BaselineInit',
+            daemon=True
+        )
+        baseline_thread.start()
+        
+        # Give baseline thread a moment to start (non-blocking)
+        time.sleep(0.1)
         
         # Start monitoring threads
         if 'process' in monitor_types:
@@ -195,11 +207,15 @@ class RealTimeMonitor:
         """Initialize baseline state for comparison."""
         import psutil
         
+        logger.info("Starting baseline initialization...")
+        
         # Get current processes
         try:
             self._known_pids = {p.pid for p in psutil.process_iter(['pid'])}
+            logger.debug(f"Got process baseline: {len(self._known_pids)} processes")
         except Exception as e:
             logger.error(f"Failed to get process baseline: {e}")
+            self._known_pids = set()
         
         # Get current connections
         try:
@@ -208,10 +224,16 @@ class RealTimeMonitor:
                 (c.remote_ip, c.remote_port, c.pid)
                 for c in connections
             }
+            logger.debug(f"Got network baseline: {len(self._previous_connections)} connections")
         except Exception as e:
             logger.error(f"Failed to get network baseline: {e}")
+            self._previous_connections = set()
         
-        logger.debug(f"Initialized baselines: {len(self._known_pids)} processes, "
+        # Mark baselines as initialized
+        with self._baseline_lock:
+            self._baselines_initialized = True
+        
+        logger.info(f"Baseline initialization complete: {len(self._known_pids)} processes, "
                     f"{len(self._previous_connections)} connections")
     
     def _start_process_monitor(self) -> None:
@@ -290,6 +312,18 @@ class RealTimeMonitor:
         
         logger.info("Process monitor started")
         poll_interval = self.config.config.scan.realtime_poll_interval
+        
+        # Wait for baselines to be initialized (with timeout)
+        max_wait = 30  # seconds
+        wait_count = 0
+        while not self._baselines_initialized and wait_count < max_wait:
+            if stop_event.is_set():
+                return
+            time.sleep(1)
+            wait_count += 1
+        
+        if not self._baselines_initialized:
+            logger.warning("Baselines not initialized after 30 seconds, starting anyway")
         
         while not stop_event.is_set():
             try:
@@ -717,6 +751,18 @@ class RealTimeMonitor:
         logger.info("Network monitor started")
         
         poll_interval = self.config.config.scan.realtime_poll_interval
+        
+        # Wait for baselines to be initialized (with timeout)
+        max_wait = 30  # seconds
+        wait_count = 0
+        while not self._baselines_initialized and wait_count < max_wait:
+            if stop_event.is_set():
+                return
+            time.sleep(1)
+            wait_count += 1
+        
+        if not self._baselines_initialized:
+            logger.warning("Baselines not initialized after 30 seconds, starting anyway")
         
         while not stop_event.is_set():
             try:

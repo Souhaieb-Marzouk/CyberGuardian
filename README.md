@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
-[![GitHub Stars](https://img.shields.io/github/stars/YOUR_USERNAME/CyberGuardian?style=social)](https://github.com/YOUR_USERNAME/CyberGuardian/stargazers)
+[![GitHub Stars](https://img.shields.io/github/stars/Souhaieb-Marzouk/CyberGuardian?style=social)](https://github.com/Souhaieb-Marzouk/CyberGuardian/stargazers)
 
 *A transparent, educational, and highly customizable security tool for everyone*
 
@@ -342,7 +342,7 @@ This project is licensed under the MIT License - see the [LICENSE](https://githu
 ## 📞 Contact
 
 - **GitHub**: [Souhaieb-Marzouk/CyberGuardian](https://github.com/Souhaieb-Marzouk/CyberGuardian)
-- **LinkedIn**: [Your LinkedIn Profile]
+- **LinkedIn**: [Souhaieb Marzouk](https://www.linkedin.com/in/souhaiebmarzouk/)
 - **Issues**: [GitHub Issues](https://github.com/Souhaieb-Marzouk/CyberGuardian/issues)
 
 ---

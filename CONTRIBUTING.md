@@ -42,7 +42,7 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ```bash
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/cyberguardian.git
+git clone https://github.com/Souhaieb-Marzouk/CyberGuardian.git
 cd cyberguardian
 
 # Create virtual environment
@@ -88,74 +88,6 @@ python -m pytest --cov=. tests/
    - Clear description of the feature
    - Use case and benefits
    - Possible implementation approach
-
-### Contributing Code
-
-1. Find an issue to work on or propose a new one
-2. Comment on the issue to indicate you're working on it
-3. Fork and create a feature branch
-4. Implement your changes
-5. Write/update tests
-6. Submit a pull request
-
----
-
-## Coding Standards
-
-### Python Style Guide
-
-- Follow [PEP 8](https://pep8.org/) conventions
-- Use 4 spaces for indentation
-- Maximum line length: 100 characters
-- Use meaningful variable and function names
-
-### Code Quality Tools
-
-```bash
-# Format code with Black
-black .
-
-# Check with flake8
-flake8 .
-
-# Type checking (optional)
-mypy .
-```
-
-### Documentation
-
-- Add docstrings to all public functions and classes
-- Use Google-style docstrings:
-
-```python
-def function_name(param1: str, param2: int) -> bool:
-    """Short description of function.
-
-    Longer description if needed.
-
-    Args:
-        param1: Description of first parameter.
-        param2: Description of second parameter.
-
-    Returns:
-        Description of return value.
-
-    Raises:
-        ValueError: When param1 is empty.
-    """
-    pass
-```
-
-### Type Hints
-
-Use type hints for better code clarity:
-
-```python
-from typing import Dict, List, Optional
-
-def process_data(items: List[str], config: Optional[Dict] = None) -> Dict[str, Any]:
-    pass
-```
 
 ---
 

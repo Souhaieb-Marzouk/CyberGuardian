@@ -1,0 +1,53 @@
+api:
+  abuseipdb_rate_limit: 1000
+  ai_analysis_enabled: true
+  ai_auto_analyze: false
+  ai_preferred_provider: deepseek
+  cache_ttl_hours: 24
+  max_cache_size_mb: 100
+  virustotal_rate_limit: 4
+app_name: CyberGuardian
+auto_update_rules: true
+log_backup_count: 5
+log_level: INFO
+log_max_size_mb: 10
+max_scan_threads: 4
+rules_update_url: https://raw.githubusercontent.com/Yara-Rules/rules/master/
+scan:
+  file_scan_entropy: true
+  file_scan_hashes: true
+  file_scan_pe: true
+  file_scan_stego: true
+  file_scan_yara: true
+  network_detect_beaconing: true
+  network_resolve_dns: true
+  network_threat_lookup: true
+  process_scan_behavior: true
+  process_scan_hashes: true
+  process_scan_memory: true
+  process_scan_signatures: true
+  realtime_file_monitor: true
+  realtime_network_monitor: true
+  realtime_poll_interval: 5
+  realtime_process_monitor: true
+  realtime_registry_monitor: true
+  registry_scan_autorun: true
+  registry_scan_services: true
+  registry_scan_yara: true
+scan_timeout_seconds: 300
+ui:
+  background_color: '#0a0f0f'
+  font_family: Consolas
+  font_size: 10
+  popup_duration_seconds: 10
+  primary_color: '#00ff9d'
+  remember_position: true
+  secondary_color: '#00b8ff'
+  show_popup_alerts: true
+  sound_alerts: false
+  text_color: '#e0e0e0'
+  theme: cyber_dark
+  window_height: 900
+  window_width: 1400
+update_check_interval_hours: 24
+version: 1.0.0

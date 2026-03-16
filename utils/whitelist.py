@@ -164,6 +164,7 @@ class WhitelistManager:
             'ip': [],
             'domain': [],
             'signature': [],
+            'registry_key': [],  # For registry key whitelisting
         }
         self._compile_regex_patterns()
         self._load_whitelist()
@@ -356,6 +357,10 @@ class WhitelistManager:
         if entry_type == 'path':
             return self._is_trusted_path(identifier)
         
+        # Special handling for registry keys
+        if entry_type == 'registry_key':
+            return self._is_trusted_registry_key(identifier)
+        
         # Special handling for domains
         if entry_type == 'domain':
             return self._is_trusted_domain(identifier)
@@ -370,6 +375,14 @@ class WhitelistManager:
         """Check if path matches trusted path patterns."""
         for pattern in self.trusted_path_patterns:
             if pattern.match(path):
+                return True
+        return False
+    
+    def _is_trusted_registry_key(self, key_path: str) -> bool:
+        """Check if registry key matches trusted patterns."""
+        key_path = key_path.lower().strip()
+        for pattern in self.trusted_registry_patterns:
+            if pattern.match(key_path):
                 return True
         return False
     

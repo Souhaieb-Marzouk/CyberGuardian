@@ -153,8 +153,8 @@ class UIConfig:
 class AppConfig:
     """Main application configuration."""
     app_name: str = "CyberGuardian"
-    version: str = "1.0.0"
-    author: str = "Security Team"
+    version: str = "1.1.0"
+    author: str = "Souhaieb Marzouk"
     
     scan: ScanConfig = field(default_factory=ScanConfig)
     api: APIConfig = field(default_factory=APIConfig)

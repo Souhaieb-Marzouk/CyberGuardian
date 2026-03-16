@@ -595,6 +595,11 @@ class ProcessScanner(BaseScanner):
         """Run all detection checks on a process."""
         detections = []
         
+        # Skip processes that are in the whitelist (user-added or system)
+        if proc_info.is_whitelisted:
+            self.logger.debug(f"Skipping whitelisted process: {proc_info.name}")
+            return detections
+        
         # Skip system processes that are whitelisted
         if self.whitelist.is_system_process(proc_info.name):
             return detections

@@ -1,96 +1,90 @@
 # CyberGuardian - Complete User Guide
 
 ## Table of Contents
-1. [Introduction](#introduction)
-2. [Project Hierarchy](#project-hierarchy)
-3. [Installation Guide](#installation-guide)
-4. [Quick Start](#quick-start)
-5. [GUI Usage](#gui-usage)
-6. [AI-Powered Analysis](#ai-powered-analysis)
-7. [Detection Methods](#detection-methods)
-8. [Understanding Results](#understanding-results)
-9. [Configuration](#configuration)
-10. [API Keys Setup](#api-keys-setup)
-11. [Troubleshooting](#troubleshooting)
-
----
-
-## Introduction
-
-CyberGuardian is an open-source malware detection and threat hunting tool designed for **everyone** — from everyday computer users to professional security analysts. It provides transparent, understandable threat detection without requiring a security background.
-
-### Who Is This For?
-
-| User Type | Use Case |
-|-----------|----------|
-| **Everyday Users** | Scan downloaded files before opening, check if your computer is compromised, investigate abnormal behavior |
-| **Power Users** | Monitor network connections, check for persistence mechanisms, verify software integrity |
-| **Threat Hunters** | Investigate IOCs, hunt for malware persistence, analyze suspicious processes |
-| **SOC Analysts** | Triage alerts, perform initial analysis, document findings with AI assistance |
+1. [Project Hierarchy](#project-hierarchy)
+2. [Installation Guide](#installation-guide)
+3. [Quick Start](#quick-start)
+4. [GUI Usage](#gui-usage)
+5. [CLI Usage](#cli-usage)
+6. [Detection Methods](#detection-methods)
+7. [Understanding Results](#understanding-results)
+8. [Configuration](#configuration)
+9. [API Keys Setup](#api-keys-setup)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Project Hierarchy
 
 ```
-CyberGuardian/
+cyberguardian/
 │
-├── 📄 main.py                     # Application entry point
-├── 📄 requirements.txt            # Python dependencies
-├── 📄 build.py                    # PyInstaller build script
-├── 📄 setup_windows.bat           # Windows automated setup
+├── main.py                    # Main entry point (GUI/CLI)
+├── start.bat                  # Windows quick-start script
+├── requirements.txt           # Python dependencies
+├── README.md                  # Project documentation
 │
-├── 📂 ui/
+├── config/                    # Configuration files (auto-created)
+│   └── config.yaml           # User settings
+│
+├── data/                      # Application data (auto-created)
+│   └── whitelist.json        # Whitelist database
+│
+├── logs/                      # Log files (auto-created)
+│   ├── cyberguardian.log     # Main log
+│   ├── cyberguardian.json    # Structured JSON log
+│   └── audit.log             # Security audit log
+│
+├── reports/                   # Generated reports (auto-created)
+│   └── *.html/pdf/json       # Exported reports
+│
+├── cache/                     # Threat intel cache (auto-created)
+│   ├── hash_cache.json       # Hash lookup results
+│   ├── ip_cache.json         # IP reputation results
+│   └── domain_cache.json     # Domain reputation results
+│
+├── yara_rules/                # Yara detection rules
+│   ├── suspicious_apis.yar   # Suspicious API calls
+│   ├── powershell_suspicious.yar  # PowerShell patterns
+│   ├── crypto_mining.yar     # Crypto miner detection
+│   ├── ransomware.yar        # Ransomware patterns
+│   ├── backdoor.yar          # Backdoor/C2 detection
+│   ├── packed_executable.yar # Packed binary detection
+│   ├── webshell.yar          # Webshell detection
+│   ├── anti_analysis.yar     # Anti-debug/VM detection
+│   ├── credentials.yar       # Credential theft detection
+│   └── dropper.yar           # Dropper patterns
+│
+├── scanners/                  # Scanner modules
 │   ├── __init__.py
-│   └── main_window.py             # PyQt5 main GUI (3,900+ lines)
+│   ├── base_scanner.py       # Base class for all scanners
+│   ├── process_scanner.py    # Process analysis engine
+│   ├── file_scanner.py       # File analysis engine
+│   ├── registry_scanner.py   # Registry analysis engine
+│   ├── network_scanner.py    # Network analysis engine
+│   ├── realtime_monitor.py   # Real-time monitoring
+│   └── yara_manager.py       # Yara rule management
 │
-├── 📂 scanners/
+├── ui/                        # User interface
 │   ├── __init__.py
-│   ├── base_scanner.py            # Abstract scanner base class
-│   ├── process_scanner.py         # Process enumeration & analysis
-│   ├── file_scanner.py            # File scanning with YARA
-│   ├── network_scanner.py         # Network connection analysis
-│   ├── registry_scanner.py        # Windows registry scanning
-│   ├── memory_analyzer.py         # Memory forensics integration
-│   ├── realtime_monitor.py        # Real-time protection monitor
-│   └── yara_manager.py            # YARA rule management
+│   └── main_window.py        # PyQt5 main window
 │
-├── 📂 ai_analysis/
+├── reporting/                 # Report generation
 │   ├── __init__.py
-│   └── analyzer.py                # Multi-provider AI analysis engine
+│   └── generator.py          # HTML/PDF/JSON report generator
 │
-├── 📂 threat_intel/
+├── threat_intel/              # Threat intelligence
 │   ├── __init__.py
-│   ├── intel.py                   # Threat intelligence aggregator
-│   └── virustotal_checker.py      # VirusTotal API integration
+│   └── intel.py              # Hash/IP/Domain lookup
 │
-├── 📂 analysis/
+├── utils/                     # Utilities
 │   ├── __init__.py
-│   └── deep_analysis_coordinator.py  # Coordinates deep analysis modes
+│   ├── config.py             # Configuration management
+│   ├── logging_utils.py      # Logging system
+│   └── whitelist.py          # Whitelist management
 │
-├── 📂 reporting/
-│   ├── __init__.py
-│   └── generator.py               # HTML report generation
-│
-├── 📂 utils/
-│   ├── __init__.py
-│   ├── config.py                  # Configuration management
-│   ├── logging_utils.py           # Logging setup
-│   ├── whitelist.py               # Whitelist management
-│   └── secure_storage.py          # Secure API key storage
-│
-├── 📂 config/
-│   └── config.yaml                # Default configuration
-│
-├── 📂 assets/
-│   ├── icon.png                   # Application icon
-│   └── icon.ico                   # Windows executable icon
-│
-└── 📂 data/                       # Created at runtime
-    ├── yara_rules/                # Custom YARA rules
-    ├── logs/                      # Application logs
-    ├── cache/                     # Threat intel cache
-    └── quarantine/                # Quarantined files
+└── assets/                    # Static assets
+    └── (icons, images)
 ```
 
 ---
@@ -100,31 +94,22 @@ CyberGuardian/
 ### Step 1: Prerequisites
 
 **System Requirements:**
-- Windows 10/11 (64-bit)
-- Python 3.9 - 3.12 (3.11 recommended for best compatibility)
+- Windows 10/11 (64-bit recommended)
+- Python 3.10 or higher
 - 4GB RAM minimum (8GB recommended)
 - Administrator privileges (for full functionality)
-
-> ⚠️ **Note**: Python 3.13+ may have compatibility issues with PyInstaller and pywin32. Use Python 3.10-3.12 for best results.
 
 **Check Python installation:**
 ```cmd
 python --version
-# Output should be: Python 3.10.x, 3.11.x, or 3.12.x
+# Output should be: Python 3.10.x or higher
 ```
 
 ### Step 2: Download and Setup
 
-**Option A: Automated Setup (Recommended)**
-```cmd
-# Run the setup script as Administrator
-setup_windows.bat
-```
-
-**Option B: Manual Setup**
 ```cmd
 # Navigate to project directory
-cd CyberGuardian
+cd cyberguardian
 
 # Create virtual environment
 python -m venv venv
@@ -134,57 +119,53 @@ venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Run pywin32 post-install (Windows only)
-python Scripts\pywin32_postinstall.py -install
 ```
 
 ### Step 3: Verify Installation
 
 ```cmd
 # Run quick test
-python main.py
+python main.py --cli --process
 
-# Or test via CLI
-python main.py --help
+# Expected output:
+# [*] Starting process scan...
+#    Completed: XX processes, X detections
+```
+
+### Step 4: (Optional) Install Additional Components
+
+For enhanced PDF export:
+```cmd
+pip install weasyprint
+# or
+pip install pdfkit
 ```
 
 ---
 
 ## Quick Start
 
-### GUI Mode (Recommended)
+### GUI Mode (Recommended for Beginners)
 
 ```cmd
-# Start the application
+# Start GUI
 python main.py
 ```
 
 **First-time GUI steps:**
-1. Click **"Process Analysis"** to scan running processes
-2. Review any detections in the results table
-3. Click **"View Details"** for full analysis
-4. Use **"Analyze with AI"** for intelligent threat assessment
+1. Click "🔍 Process Analysis" to scan running processes
+2. Review any detections in the "⚠️ Detections" tab
+3. Click "📄 Export Report" to save results
 
-### Common Use Cases
+### CLI Mode (For Automation)
 
-**"I downloaded a file and want to check if it's safe"**
-1. Click **"File Analysis"** tab
-2. Click **"Browse"** and select the file
-3. Click **"Start Scan"**
-4. Review results and AI analysis if needed
+```cmd
+# Quick system scan
+python main.py --cli --scan-all
 
-**"My computer is running slow/suspicious"**
-1. Click **"Process Analysis"** tab
-2. Enable **"Deep Analysis"** for thorough scan
-3. Click **"Start Scan"**
-4. Look for high CPU/memory processes or suspicious detections
-
-**"I want to check what my computer is connecting to"**
-1. Click **"Network Analysis"** tab
-2. Enable **"Deep Analysis"** for DNS/hostname resolution
-3. Click **"Start Scan"**
-4. Review connections for suspicious IPs or unexpected destinations
+# Scan specific folder
+python main.py --cli --file "C:\Users\Downloads"
+```
 
 ---
 
@@ -192,101 +173,205 @@ python main.py
 
 ### Main Window Layout
 
-The CyberGuardian interface uses a cyberpunk-themed design with the following components:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  🛡️ CYBERGUARDIAN                              v1.1.0          │
+├─────────────────────────────────────────────────────────────────┤
+│  [Process] [File] [Registry] [Network] [Real-Time]              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                    TAB CONTENT                          │   │
+│  │                                                         │   │
+│  │  Overview | Detections | Logs | Whitelist              │   │
+│  │                                                         │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  Status: Ready                    Mode: Manual                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-| Component | Purpose |
-|-----------|---------|
-| **Tab Bar** | Switch between scanner types (Process, File, Network, Registry) |
-| **Scan Controls** | Start/stop scans, configure deep analysis mode |
-| **Results Table** | View detections sorted by risk level |
-| **Detail Panel** | View full evidence and AI analysis for each detection |
-| **Status Bar** | Show scan progress and current operation |
+### Scan Buttons
 
-### Scanner Tabs
+| Button | Function | Typical Use |
+|--------|----------|-------------|
+| 🔍 Process Analysis | Scan running processes | Detect malware in memory, suspicious behavior |
+| 📁 File Analysis | Scan files/folders | Scan downloads, external drives |
+| 📝 Registry Analysis | Scan Windows registry | Find persistence mechanisms |
+| 🌐 Network Analysis | Analyze connections | Detect C2, suspicious traffic |
+| ⚡ Real-Time Monitor | Continuous monitoring | Background protection |
 
-#### 🔹 Process Analysis
+### Tabs Explained
 
-Scans all running processes for:
-- Malware signatures (YARA rules)
-- Suspicious process relationships (parent-child)
-- Unusual command line arguments
-- Memory anomalies
-- Unsigned executables in suspicious locations
+**📊 Overview Tab:**
+- Summary cards showing scan statistics
+- Recent activity log
+- Quick action buttons
 
-#### 🔹 File Analysis
+**⚠️ Detections Tab:**
+- Table of all detected threats
+- Filter by risk level
+- Click "View Details" for full information
 
-Scans files and folders for:
-- Malware signatures (YARA rules)
-- High entropy (packed/encrypted content)
-- Suspicious PE headers
-- Embedded macros
-- Hash reputation via VirusTotal
+**📋 Logs Tab:**
+- Detailed application logs
+- Useful for troubleshooting
+- Can save to file
 
-#### 🔹 Network Analysis
+**✅ Whitelist Tab:**
+- Manage trusted items
+- Add/remove entries
+- Prevent false positives
 
-Analyzes network connections for:
-- Connections to known malicious IPs
-- Suspicious ports (backdoors, C2)
-- Direct IP HTTP connections (DNS bypass)
-- Unusual protocol behavior
+### Using Each Scanner
 
-#### 🔹 Registry Analysis
+#### Process Analysis
+1. Click "🔍 Process Analysis"
+2. Wait for scan to complete
+3. Review detections sorted by risk
+4. For each detection:
+   - Read the description
+   - Check remediation steps
+   - Terminate/quarantine as needed
 
-Scans Windows registry for:
-- Persistence mechanisms (Run keys, Services)
-- Hijacked file associations
-- Malicious shell extensions
-- Modified system settings
+#### File Analysis
+1. Click "📁 File Analysis"
+2. Select folder or file to scan
+3. Review results
+4. Quarantine or delete malicious files
 
-### Deep Analysis Mode
+#### Registry Analysis
+1. Click "📝 Registry Analysis"
+2. Scans autorun locations
+3. Review suspicious entries
+4. Export registry fixes if needed
 
-Enable **"Deep Analysis"** toggle for comprehensive scanning:
-- Memory forensics for processes
-- DNS cache inspection for networks
-- Extended registry locations
-- More thorough YARA rule matching
+#### Network Analysis
+1. Click "🌐 Network Analysis"
+2. Lists all connections
+3. Shows process responsible
+4. Block malicious IPs
+
+#### Real-Time Monitoring
+1. Click "⚡ Real-Time Monitor"
+2. App minimizes to system tray
+3. Alerts appear on detection
+4. Double-click tray icon to restore
 
 ---
 
-## AI-Powered Analysis
+## CLI Usage
 
-### Overview
+### Basic Commands
 
-CyberGuardian integrates with multiple AI providers for intelligent threat analysis:
-- **DeepSeek** (Recommended - affordable and capable)
-- **OpenAI GPT-4**
-- **Google Gemini**
+```bash
+# Run all scans
+python main.py --cli --scan-all
 
-### Using AI Analysis
+# Process scan only
+python main.py --cli --process
 
-1. Open any detection by clicking **"View Details"**
-2. Scroll to the **"AI-Powered Analysis"** section
-3. Select your preferred AI provider
-4. Click **"ANALYZE WITH AI"**
+# Scan specific path
+python main.py --cli --file "C:\Suspicious\Folder"
 
-### What AI Analysis Provides
+# Registry scan
+python main.py --cli --registry
 
-| Component | Description |
-|-----------|-------------|
-| **Verdict** | Legitimate / Suspicious / Malicious / Needs Investigation |
-| **Confidence Score** | How certain the AI is about its assessment |
-| **Risk Score** | Numerical risk rating (0-100) |
-| **Technical Analysis** | Detailed explanation of why something is suspicious |
-| **MITRE ATT&CK Mapping** | Relevant threat techniques if applicable |
-| **Recommendations** | Actionable remediation steps |
-| **Indicators** | Specific IOCs and suspicious behaviors |
+# Network scan
+python main.py --cli --network
+```
 
-### VirusTotal Integration
+### Real-Time Monitoring
 
-When AI analysis is triggered:
-1. CyberGuardian extracts IOCs from the detection (IPs, hashes, domains, URLs)
-2. Each IOC is checked against VirusTotal's database
-3. Results are included in the AI prompt for context-aware analysis
-4. Risk level is automatically adjusted based on VT findings
+```bash
+# Start monitoring (Ctrl+C to stop)
+python main.py --realtime
+```
+
+### Export Options
+
+```bash
+# Export as HTML
+python main.py --cli --scan-all --export report.html
+
+# Export as PDF
+python main.py --cli --scan-all --export report.pdf --format pdf
+
+# Export as JSON
+python main.py --cli --scan-all --export report.json --format json
+```
+
+### Verbosity Control
+
+```bash
+# Verbose output (debug info)
+python main.py --cli --process --verbose
+
+# Quiet mode (errors only)
+python main.py --cli --process --quiet
+```
+
+### Utility Commands
+
+```bash
+# List whitelist entries
+python main.py --list-whitelist
+
+# Update Yara rules
+python main.py --update-rules
+```
 
 ---
 
 ## Detection Methods
+
+### Process Scanner Detection
+
+| Method | Description | Risk Level |
+|--------|-------------|------------|
+| Yara Memory Scan | Matches process code against malware signatures | Critical/High |
+| Parent-Child Analysis | Detects suspicious process relationships (e.g., Word→PowerShell) | High |
+| Command Line Analysis | Identifies encoded/suspicious commands | High/Medium |
+| Hash Lookup | Checks executable hash against VirusTotal | Critical/High |
+| Signature Check | Flags unsigned executables from non-system paths | Low |
+| Resource Monitoring | Detects crypto miners by CPU/memory usage | Medium |
+
+### File Scanner Detection
+
+| Method | Description | Risk Level |
+|--------|-------------|------------|
+| Yara Static Scan | Matches file content against malware signatures | Critical/High |
+| PE Analysis | Detects packed executables, suspicious imports | High/Medium |
+| Office Macro Analysis | Detects malicious VBA macros | High |
+| Entropy Analysis | Identifies packed/encrypted content | Medium/Low |
+| Steganography | Detects hidden data in images | Medium |
+| Hash Reputation | Lookup against threat databases | Critical/High |
+
+### Registry Scanner Detection
+
+| Location | Threat Type | Risk Level |
+|----------|-------------|------------|
+| Run/RunOnce | Autorun persistence | Medium/High |
+| Services | Malicious services | High |
+| IFEO Debuggers | Process hijacking | Critical |
+| Winlogon | Logon modification | High |
+| AppInit DLLs | DLL injection | Critical |
+| Shell Extensions | Explorer hooks | Medium |
+
+### Network Scanner Detection
+
+| Indicator | Threat Type | Risk Level |
+|-----------|-------------|------------|
+| Malicious IP | C2 server, malware hosting | Critical/High |
+| Suspicious Port | Backdoor communication | High |
+| Direct IP HTTP | DNS bypass, malware | Medium |
+| Beaconing Pattern | C2 heartbeat | High |
+| Unexpected Process | Hijacked application | High |
+
+---
+
+## Understanding Results
 
 ### Risk Levels
 
@@ -317,260 +402,323 @@ Each detection includes a confidence score (0-100%):
 - **50-69%**: Moderate confidence, investigate further
 - **Below 50%**: Low confidence, may be false positive
 
-### Detection Types
-
-| Type | Scanner | Example |
-|------|---------|---------|
-| `yara_match` | Process/File | YARA signature matched |
-| `suspicious_process` | Process | Unusual process behavior |
-| `malicious_ip` | Network | IP flagged by threat intel |
-| `suspicious_port` | Network | Connection to backdoor port |
-| `registry_persistence` | Registry | Autorun entry added |
-| `high_entropy` | File | Packed/encrypted file |
-| `network_direct_ip_http` | Network | HTTP without DNS resolution |
-
----
-
-## Understanding Results
-
-### Detection Detail Dialog
-
-When you click **"View Details"** on a detection:
+### Sample Detection Output
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ DETECTION DETAILS                                            │
+│ DETECTION: YARA_CRITICAL                                       │
 ├──────────────────────────────────────────────────────────────┤
-│ [Risk Badge]  CRITICAL                                       │
-│ Type:         yara_match                                     │
-│ Confidence:   95%                                            │
+│ Indicator:   malware.exe (PID: 1234)                          │
+│ Path:        C:\Users\Downloads\malware.exe                   │
+│ Risk Level:  CRITICAL                                         │
+│ Confidence:  95%                                              │
 ├──────────────────────────────────────────────────────────────┤
-│ Indicator:    malware.exe (PID: 1234)                        │
-│ Path:         C:\Users\Downloads\malware.exe                 │
-├──────────────────────────────────────────────────────────────┤
-│ Description:                                                 │
-│ Critical malware signature detected: Emotet_Banking_Trojan   │
+│ Description: Critical malware signature: Emotet_Banking_Trojan│
 │                                                              │
 │ Detection Reason:                                            │
-│ YARA rules matched: emotet_trickbot, banking_trojan          │
+│ Yara rules matched: emotet_trickbot, banking_trojan          │
 ├──────────────────────────────────────────────────────────────┤
-│ EVIDENCE:                                                    │
-│ {                                                            │
-│   "yara_matches": ["emotet_trickbot", "banking_trojan"],    │
-│   "sha256": "abc123...",                                     │
-│   "virustotal_ratio": "65/72"                                │
-│ }                                                            │
+│ REMEDIATION STEPS:                                            │
+│ 1. Terminate process immediately (PID: 1234)                  │
+│ 2. Quarantine file: C:\Users\Downloads\malware.exe           │
+│ 3. Run full anti-malware scan                                │
+│ 4. Isolate system if critical                                │
 ├──────────────────────────────────────────────────────────────┤
-│ REMEDIATION STEPS:                                           │
-│ 1. Terminate process immediately (PID: 1234)                 │
-│ 2. Quarantine file: C:\Users\Downloads\malware.exe          │
-│ 3. Run full anti-malware scan                               │
-│ 4. Check for persistence mechanisms                         │
-├──────────────────────────────────────────────────────────────┤
-│ [AI-POWERED ANALYSIS]                                        │
-│ Select Provider: [DeepSeek ▼]                                │
-│ [ANALYZE WITH AI]                                            │
+│ EVIDENCE:                                                     │
+│ {                                                             │
+│   "yara_matches": ["emotet_trickbot", "banking_trojan"],     │
+│   "sha256": "abc123...",                                      │
+│   "detection_ratio": "65/72"                                  │
+│ }                                                             │
 └──────────────────────────────────────────────────────────────┘
 ```
-
-### Available Actions
-
-| Action | Description |
-|--------|-------------|
-| **Kill Process** | Terminate the suspicious process |
-| **Quarantine File** | Move file to secure quarantine |
-| **Delete File** | Permanently delete the file |
-| **Add to Whitelist** | Mark as trusted (prevents future alerts) |
-| **Open Location** | Open file location in Explorer |
 
 ---
 
 ## Configuration
 
-### Accessing Settings
+### Configuration File Location
 
-Click the **Settings** button (gear icon) to configure:
-- **General**: Theme, font size, popups, sound alerts
-- **Scan**: Enable/disable specific detection methods
-- **API Keys**: Configure threat intel and AI providers
-- **YARA Rules**: Manage detection rules
-
-### Configuration File
-
-Settings are saved to:
 ```
 config/config.yaml
 ```
 
-Key settings:
+### Key Settings
+
 ```yaml
+# Scan Settings
 scan:
-  process_scan_memory: true      # YARA memory scan
-  process_scan_behavior: true    # Heuristic analysis
-  file_scan_yara: true           # File YARA scan
-  file_scan_entropy: true        # Entropy analysis
+  process_scan_memory: true      # Enable Yara memory scan
+  process_scan_behavior: true    # Enable heuristics
+  file_scan_yara: true           # Enable file Yara scan
+  file_scan_entropy: true        # Check file entropy
   network_resolve_dns: true      # Reverse DNS lookup
-  network_threat_lookup: true    # Threat intel queries
+  network_threat_lookup: true    # Query threat intel
 
-realtime:
-  process_monitor: true          # Monitor new processes
-  file_monitor: true             # Monitor file changes
-  poll_interval: 5               # Check interval (seconds)
+# Real-Time Monitoring
+realtime_process_monitor: true   # Monitor new processes
+realtime_file_monitor: true      # Monitor file changes
+realtime_registry_monitor: true  # Monitor registry
+realtime_network_monitor: true   # Monitor connections
+realtime_poll_interval: 5        # Check interval (seconds)
 
-performance:
-  max_scan_threads: 4            # Concurrent threads
-  scan_timeout_seconds: 300      # Max scan duration
+# Performance
+max_scan_threads: 4              # Concurrent scan threads
+scan_timeout_seconds: 300        # Max scan duration
+
+# Logging
+log_level: INFO                  # DEBUG, INFO, WARNING, ERROR
+log_max_size_mb: 10              # Max log file size
+log_backup_count: 5              # Number of backup logs
 ```
 
 ---
 
 ## API Keys Setup
 
-### VirusTotal (Threat Intelligence)
+### VirusTotal (Free Tier)
 
-1. Visit: https://www.virustotal.com/gui/join-us
-2. Create a free account
-3. Navigate to API Key section
-4. Copy your API key
-5. In CyberGuardian: **Settings → API Keys → VirusTotal**
+1. Visit: https://www.virustotal.com/gui/my-apikey
+2. Sign up for free account
+3. Copy your API key
+4. Set environment variable:
 
-**Rate Limits (Free Tier):**
-- 4 requests per minute
-- 500-1000 requests per day
+```cmd
+# Windows Command Prompt
+set CYBERGUARDIAN_VIRUSTOTAL_API_KEY=your_api_key_here
 
-### AI Providers
+# PowerShell
+$env:CYBERGUARDIAN_VIRUSTOTAL_API_KEY="your_api_key_here"
 
-#### DeepSeek (Recommended)
-1. Visit: https://platform.deepseek.com
-2. Create account and generate API key
-3. In CyberGuardian: **Settings → AI Analysis → DeepSeek**
+# Or create .env file in project root:
+CYBERGUARDIAN_VIRUSTOTAL_API_KEY=your_api_key_here
+```
 
-**Pricing:** Very affordable, excellent for threat analysis
+**Rate Limits:**
+- Free tier: 4 requests per minute
+- Premium: Higher limits available
 
-#### OpenAI GPT-4
-1. Visit: https://platform.openai.com
-2. Generate API key
-3. In CyberGuardian: **Settings → AI Analysis → OpenAI**
+### AbuseIPDB (Free Tier)
 
-#### Google Gemini
-1. Visit: https://makersuite.google.com
-2. Get API key
-3. In CyberGuardian: **Settings → AI Analysis → Gemini**
+1. Visit: https://www.abuseipdb.com/api
+2. Create free account
+3. Generate API key
+4. Set environment variable:
 
-### Secure Storage
+```cmd
+set CYBERGUARDIAN_ABUSEIPDB_API_KEY=your_api_key_here
+```
 
-API keys are stored securely using:
-- **Windows Credential Manager** (Windows)
-- **Keychain** (macOS)
-- **Secret Service** (Linux)
+**Rate Limits:**
+- Free tier: 1,000 requests per day
 
-Keys are never stored in plain text files.
+### AlienVault OTX (Optional)
+
+1. Visit: https://otx.alienvault.com/api
+2. Register and get API key
+3. Set environment variable:
+
+```cmd
+set CYBERGUARDIAN_ALIENVAULT_API_KEY=your_api_key_here
+```
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
+### Common Issues and Solutions
 
 #### "Permission denied" errors
 
-**Solution:** Run CyberGuardian as Administrator
-- Right-click `CyberGuardian.exe` or Command Prompt
-- Select "Run as administrator"
-
-#### AI Analysis returns "Unable to parse AI response"
-
-**Solution:**
-1. Check your API key is valid
-2. Ensure you have API credits
-3. Try a different AI provider
-4. Check internet connectivity
-
-#### YARA rules not loading
+**Problem:** Cannot access certain processes or files.
 
 **Solution:**
 ```cmd
-# Verify YARA installation
-pip show yara-python
+# Run as Administrator
+# Right-click Command Prompt → Run as administrator
+python main.py --cli --process
+```
 
-# Reinstall if needed
+#### Yara compilation errors
+
+**Problem:** Failed to compile Yara rules.
+
+**Solution:**
+```cmd
+# Reinstall yara-python
 pip uninstall yara-python
 pip install yara-python
+
+# If issues persist, try:
+pip install yara-python --no-cache-dir
+```
+
+#### PyQt5 GUI not starting
+
+**Problem:** GUI window doesn't appear.
+
+**Solution:**
+```cmd
+# Reinstall PyQt5
+pip install --upgrade PyQt5
+
+# Test with CLI mode first
+python main.py --cli --process
 ```
 
 #### Network scan shows no connections
 
+**Problem:** Empty network scan results.
+
 **Solution:**
 - Run as Administrator
-- Check firewall settings
+- Check if firewall is blocking
 - Some connections may be hidden by security software
+
+#### High memory usage
+
+**Problem:** Application uses too much memory.
+
+**Solution:**
+```yaml
+# Edit config/config.yaml
+max_scan_threads: 2  # Reduce from 4
+scan_timeout_seconds: 120  # Reduce timeout
+```
 
 #### False positives
 
-**Solutions:**
-1. Add to whitelist via detection details
-2. Review confidence score - low scores may be false positives
-3. Use AI analysis for additional context
+**Problem:** Too many false detections.
 
-### Checking Logs
+**Solution:**
+1. Add items to whitelist via GUI (Whitelist tab)
+2. Or edit `data/whitelist.json`
+3. Check detection confidence - low scores may be false positives
 
-Logs are stored in:
+#### Slow scans
+
+**Problem:** Scans take too long.
+
+**Solution:**
+```yaml
+# Edit config/config.yaml
+scan:
+  file_scan_stego: false      # Disable steganography check
+  network_threat_lookup: false # Skip online lookups
 ```
-data/logs/cyberguardian.log
-```
 
-View recent errors:
+### Log Analysis
+
+Check logs for errors:
 ```cmd
-type data\logs\cyberguardian.log | findstr /i "error"
+# View recent logs
+type logs\cyberguardian.log | more
+
+# Search for errors
+findstr /i "error" logs\cyberguardian.log
 ```
 
 ### Getting Help
 
-1. Check logs for error details
-2. Review this user guide
-3. Check the BUILD_FIX.md for build-related issues
-4. Open an issue on GitHub with:
-   - Error message
-   - Steps to reproduce
-   - System information (Windows version, Python version)
-
----
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+P` | Start Process Scan |
-| `Ctrl+F` | Start File Scan |
-| `Ctrl+R` | Start Registry Scan |
-| `Ctrl+N` | Start Network Scan |
-| `Ctrl+E` | Export Report |
-| `Ctrl+Q` | Quit Application |
-| `F5` | Refresh Results |
-| `Escape` | Cancel Current Scan |
+1. Check logs in `logs/cyberguardian.log`
+2. Run with `--verbose` flag for debug info
+3. Verify all dependencies installed:
+   ```cmd
+   pip list | findstr "PyQt5 yara pefile olefile psutil"
+   ```
 
 ---
 
 ## Best Practices
 
-### For Everyday Users
-- Scan downloaded files before opening
-- Run a process scan weekly
-- Pay attention to Critical and High risk detections
-- Use AI analysis for guidance on what to do
+### Regular Scanning Routine
 
-### For Threat Hunters
-- Enable Deep Analysis mode for comprehensive scans
-- Cross-reference findings with VirusTotal results
-- Document findings using the export feature
-- Customize YARA rules for your environment
+1. **Daily:** Quick process scan
+2. **Weekly:** Full system scan (all modules)
+3. **Monthly:** Review whitelist and update rules
 
-### For SOC Analysts
-- Use as initial triage tool
-- Correlate with SIEM alerts
-- Export reports for incident documentation
-- Integrate AI analysis into investigation workflow
+### Responding to Detections
+
+1. **Critical:** Isolate system, investigate immediately
+2. **High:** Investigate within 24 hours
+3. **Medium:** Review within 1 week
+4. **Low:** Optional investigation
+
+### Maintaining Whitelist
+
+1. Review whitelist monthly
+2. Remove outdated entries
+3. Document why items were whitelisted
+4. Export backup regularly
+
+### Updating Detection Rules
+
+```cmd
+# Update Yara rules monthly
+python main.py --update-rules
+
+# Or manually add rules to yara_rules/
+```
 
 ---
 
-*CyberGuardian v1.1.0 - For questions or issues, visit: https://github.com/YOUR_USERNAME/CyberGuardian*
+## Keyboard Shortcuts (GUI)
+
+| Shortcut | Action |
+|----------|--------|
+| Ctrl+P | Process Scan |
+| Ctrl+F | File Scan |
+| Ctrl+R | Registry Scan |
+| Ctrl+N | Network Scan |
+| Ctrl+E | Export Report |
+| Ctrl+Q | Quit Application |
+| F5 | Refresh Results |
+| Escape | Cancel Current Scan |
+
+---
+
+## Command Reference
+
+```
+CyberGuardian v1.1.0 - Windows Malware & Anomaly Detection Tool
+
+USAGE:
+    python main.py [OPTIONS]
+
+OPTIONS:
+    -c, --cli              Run in CLI mode (no GUI)
+    -a, --scan-all         Run all available scans
+    -p, --process          Scan running processes
+    -f, --file PATH        Scan file or folder
+    -r, --registry         Scan Windows registry
+    -n, --network          Scan network connections
+    --realtime             Start real-time monitoring
+    -e, --export FILE      Export report to file
+    --format FORMAT        Report format: html, pdf, json, text
+    -v, --verbose          Enable verbose output
+    -q, --quiet            Minimal output (errors only)
+    --update-rules         Update Yara rules from remote
+    --list-whitelist       List all whitelist entries
+    --config FILE          Path to configuration file
+    -h, --help             Show this help message
+
+EXAMPLES:
+    python main.py                           # Launch GUI
+    python main.py --cli --scan-all          # CLI full scan
+    python main.py --cli --process -v        # Verbose process scan
+    python main.py --cli --file C:\Downloads # Scan Downloads folder
+    python main.py --realtime                # Real-time monitoring
+    python main.py --cli --scan-all -e report.html --format html
+```
+
+---
+
+## Support & Contact
+
+For issues, feature requests, or contributions:
+1. Check the troubleshooting section above
+2. Review logs for error details
+3. Create an issue on the project repository with:
+   - Error message
+   - Steps to reproduce
+   - System information (Windows version, Python version)

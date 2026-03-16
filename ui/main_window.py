@@ -1079,12 +1079,39 @@ class DetectionDialog(QDialog):
         whitelist_btn.setMinimumHeight(40)
         whitelist_btn.setFont(QFont('Consolas', 11, QFont.Bold))
         
-        # Set initial text and action based on whitelist status
+        # Set initial text, style, and action based on whitelist status
         if self._is_whitelisted:
-            whitelist_btn.setText(" Remove from Whitelist")
+            whitelist_btn.setText("✓ Remove from Whitelist")
+            whitelist_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {CYBER_COLORS['low']};
+                    color: white;
+                    border: 2px solid {CYBER_COLORS['low']};
+                    border-radius: 8px;
+                    padding: 8px 16px;
+                    font-size: 11px;
+                    font-weight: bold;
+                }}
+                QPushButton:hover {{
+                    background-color: #5ab868;
+                    border-color: #5ab868;
+                }}
+            """)
             whitelist_btn.clicked.connect(lambda: self._request_action("remove_whitelist"))
         else:
-            whitelist_btn.setText(" Add to Whitelist")
+            whitelist_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {CYBER_COLORS['background_card']};
+                    color: {CYBER_COLORS['primary']};
+                    border: 2px solid {CYBER_COLORS['primary']};
+                    border-radius: 8px;
+                    padding: 8px 16px;
+                }}
+                QPushButton:hover {{
+                    background-color: {CYBER_COLORS['primary']};
+                    color: {CYBER_COLORS['background']};
+                }}
+            """)
             whitelist_btn.clicked.connect(lambda: self._request_action("add_whitelist"))
         
         # Store reference for later updates
@@ -1257,23 +1284,15 @@ class DetectionDialog(QDialog):
         
         # Check IOCs against VirusTotal if API key is configured
         vt_result = None
-        original_risk_level = self.detection.risk_level
-        
         if VIRUSTOTAL_AVAILABLE and is_virustotal_available():
             try:
                 self.ai_progress_label.setText("Checking IOCs against VirusTotal...")
                 self.ai_progress_label.setStyleSheet(f"color: {CYBER_COLORS['secondary']}; font-size: 12px; padding: 5px;")
                 
                 vt_checker = get_virustotal_checker()
+                vt_result = vt_checker.check_iocs_from_evidence(self.detection.evidence or {})
                 
-                # Check the main indicator and any IOCs from evidence
-                vt_result = vt_checker.check_iocs_from_detection(
-                    indicator=self.detection.indicator,
-                    detection_type=self.detection.detection_type,
-                    evidence=self.detection.evidence or {}
-                )
-                
-                # Add VirusTotal results to detection data for AI analysis
+                # Add VirusTotal results to detection data
                 detection_data['virustotal_result'] = {
                     'iocs_checked': vt_result.iocs_checked,
                     'iocs_malicious': vt_result.iocs_malicious,
@@ -1282,16 +1301,13 @@ class DetectionDialog(QDialog):
                     'highest_risk_level': vt_result.highest_risk_level,
                     'vt_summary': vt_result.vt_summary,
                     'all_iocs': vt_result.all_iocs,
-                    # Include detailed malicious results (only malicious items)
+                    # Include detailed results
                     'hash_results': [
                         {
                             'hash_value': r.hash_value[:16] + '...',
                             'is_malicious': r.is_malicious,
                             'detection_ratio': r.detection_ratio,
-                            'malicious_count': r.malicious_count,
-                            'total_engines': r.total_engines,
-                            'threat_names': r.threat_names[:5],
-                            'file_type': r.file_type
+                            'threat_names': r.threat_names[:3]
                         } for r in vt_result.hash_results if r.is_malicious
                     ],
                     'ip_results': [
@@ -1299,11 +1315,8 @@ class DetectionDialog(QDialog):
                             'ip_address': r.ip_address,
                             'is_malicious': r.is_malicious,
                             'detection_ratio': r.detection_ratio,
-                            'malicious_count': r.malicious_count,
-                            'total_engines': r.total_engines,
                             'country': r.country,
-                            'as_owner': r.as_owner,
-                            'threat_names': r.threat_names[:5]
+                            'as_owner': r.as_owner
                         } for r in vt_result.ip_results if r.is_malicious
                     ],
                     'domain_results': [
@@ -1323,35 +1336,24 @@ class DetectionDialog(QDialog):
                     ]
                 }
                 
-                # Log detailed VT results for debugging
-                logger.info(f"[VT DEBUG] IOCs found in evidence: {vt_result.all_iocs}")
-                for ip_r in vt_result.ip_results:
-                    logger.info(f"[VT DEBUG] IP {ip_r.ip_address}: is_malicious={ip_r.is_malicious}, ratio={ip_r.detection_ratio}, malicious_count={ip_r.malicious_count}")
-                
-                # Adjust risk level based on VirusTotal results
+                # Update risk level based on VirusTotal results
                 if vt_result.iocs_malicious > 0:
-                    from scanners.base_scanner import RiskLevel
-                    
-                    # Determine new risk level based on VT findings
+                    original_risk = self.detection.risk_level
+                    # Adjust risk level
                     if vt_result.highest_risk_level == 'critical':
-                        detection_data['risk_level'] = 'critical'
-                        detection_data['risk_adjusted_by_vt'] = True
-                        detection_data['original_risk_level'] = original_risk_level.value
+                        if original_risk != RiskLevel.CRITICAL:
+                            detection_data['risk_level'] = 'critical'
+                            detection_data['risk_adjusted_by_vt'] = True
                     elif vt_result.highest_risk_level == 'high':
-                        if original_risk_level not in [RiskLevel.CRITICAL]:
+                        if original_risk not in [RiskLevel.CRITICAL]:
                             detection_data['risk_level'] = 'high'
                             detection_data['risk_adjusted_by_vt'] = True
-                            detection_data['original_risk_level'] = original_risk_level.value
-                    elif vt_result.highest_risk_level == 'medium':
-                        if original_risk_level not in [RiskLevel.CRITICAL, RiskLevel.HIGH]:
-                            detection_data['risk_level'] = 'medium'
-                            detection_data['risk_adjusted_by_vt'] = True
-                            detection_data['original_risk_level'] = original_risk_level.value
-                    
-                    logger.info(f"[VIRUSTOTAL] Risk adjusted: {original_risk_level.value} -> {detection_data['risk_level']} based on {vt_result.iocs_malicious} malicious IOCs")
+                
+                logger.info(f"[VIRUSTOTAL] IOC check complete: {vt_result.iocs_checked} checked, {vt_result.iocs_malicious} malicious")
                 
             except Exception as e:
                 logger.warning(f"VirusTotal IOC check failed: {e}")
+                # Continue without VT results
                 vt_result = None
         
         # Start worker
@@ -1359,20 +1361,22 @@ class DetectionDialog(QDialog):
         self.ai_analyze_btn.setText(" ANALYZING...")
         
         # Build status message
-        status_msg = "Analyzing detection with AI..."
-        vt_info = ""
+        status_msg = "Connecting to AI provider and analyzing detection..."
         if vt_result and vt_result.iocs_checked > 0:
             status_msg = f"VT: {vt_result.iocs_checked} IOCs checked ({vt_result.iocs_malicious} malicious). Analyzing with AI..."
+        
+        self.ai_progress_label.setText(status_msg)
+        self.ai_progress_label.setStyleSheet(f"color: {CYBER_COLORS['secondary']}; font-size: 12px; padding: 5px;")
+        
+        # Build waiting message
+        vt_info = ""
+        if vt_result and vt_result.iocs_checked > 0:
             vt_info = f"\n\nVirusTotal Results:\n"
             vt_info += f"  • IOCs Checked: {vt_result.iocs_checked}\n"
             vt_info += f"  • Malicious: {vt_result.iocs_malicious}\n"
             vt_info += f"  • Clean: {vt_result.iocs_clean}\n"
-            vt_info += f"  • Highest Risk: {vt_result.highest_risk_level.upper()}\n"
             if vt_result.vt_summary:
-                vt_info += f"\n  Summary: {vt_result.vt_summary[:200]}\n"
-        
-        self.ai_progress_label.setText(status_msg)
-        self.ai_progress_label.setStyleSheet(f"color: {CYBER_COLORS['secondary']}; font-size: 12px; padding: 5px;")
+                vt_info += f"\n  Summary: {vt_result.vt_summary[:100]}...\n"
         
         self.ai_result_text.setPlainText(
             "════════════════════════════════════════════════════════════\n"
@@ -1562,10 +1566,40 @@ class DetectionDialog(QDialog):
                 pass
             
             if is_whitelisted:
-                self.whitelist_btn.setText(" Remove from Whitelist")
+                self.whitelist_btn.setText("✓ Remove from Whitelist")
+                self.whitelist_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {CYBER_COLORS['low']};
+                        color: white;
+                        border: 2px solid {CYBER_COLORS['low']};
+                        border-radius: 8px;
+                        padding: 12px 24px;
+                        font-size: 14px;
+                        font-weight: bold;
+                    }}
+                    QPushButton:hover {{
+                        background-color: #5ab868;
+                        border-color: #5ab868;
+                    }}
+                """)
                 self.whitelist_btn.clicked.connect(lambda: self._request_action("remove_whitelist"))
             else:
                 self.whitelist_btn.setText(" Add to Whitelist")
+                self.whitelist_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {CYBER_COLORS['background_card']};
+                        color: {CYBER_COLORS['primary']};
+                        border: 2px solid {CYBER_COLORS['primary']};
+                        border-radius: 8px;
+                        padding: 12px 24px;
+                        font-size: 14px;
+                        font-weight: bold;
+                    }}
+                    QPushButton:hover {{
+                        background-color: {CYBER_COLORS['primary']};
+                        color: {CYBER_COLORS['background']};
+                    }}
+                """)
                 self.whitelist_btn.clicked.connect(lambda: self._request_action("add_whitelist"))
     
     def _export_ai_analysis_html(self):
@@ -2844,6 +2878,52 @@ class MainWindow(QMainWindow):
             deep_info_label.setStyleSheet(f"color: {CYBER_COLORS['high']}; font-size: 12px; font-weight: bold;")
         deep_analysis_layout.addWidget(deep_info_label)
         
+        # VirusTotal note
+        vt_available = VIRUSTOTAL_AVAILABLE and is_virustotal_available()
+        if vt_available:
+            vt_note = QLabel("✓ VirusTotal API key configured")
+            vt_note.setStyleSheet(f"color: {CYBER_COLORS['low']}; font-size: 11px; margin-left: 10px;")
+        else:
+            vt_note = QLabel("⚠ Add VirusTotal API key in Settings for IOC checking")
+            vt_note.setStyleSheet(f"color: {CYBER_COLORS['medium']}; font-size: 11px; margin-left: 10px;")
+        deep_analysis_layout.addWidget(vt_note)
+        
+        # VT Analysis Depth selector
+        if vt_available:
+            depth_label = QLabel("VT Depth:")
+            depth_label.setStyleSheet(f"color: {CYBER_COLORS['text_muted']}; font-size: 11px; margin-left: 15px;")
+            deep_analysis_layout.addWidget(depth_label)
+            
+            self.vt_depth_combo = QComboBox()
+            self.vt_depth_combo.addItems(['Standard', 'Deep', 'Full'])
+            self.vt_depth_combo.setCurrentIndex(0)  # Default to Standard
+            self.vt_depth_combo.setToolTip(
+                "VirusTotal Analysis Depth:\n\n"
+                "Standard: Hashes, IPs, Domains, URLs (~3-5 min)\n"
+                "Deep: + Relations data (contacted hosts, dropped files)\n"
+                "Full: + Community data + Secondary IOC discovery"
+            )
+            self.vt_depth_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: {CYBER_COLORS['background_secondary']};
+                    color: {CYBER_COLORS['text']};
+                    border: 1px solid {CYBER_COLORS['border']};
+                    border-radius: 4px;
+                    padding: 3px 8px;
+                    font-size: 11px;
+                    min-width: 80px;
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {CYBER_COLORS['background_card']};
+                    color: {CYBER_COLORS['text']};
+                    selection-background-color: {CYBER_COLORS['primary']};
+                }}
+            """)
+            deep_analysis_layout.addWidget(self.vt_depth_combo)
+        
         deep_analysis_layout.addStretch()
         
         # Estimated time label
@@ -3237,29 +3317,44 @@ class MainWindow(QMainWindow):
     def toggle_realtime_monitoring(self):
         """Toggle real-time monitoring."""
         if self.realtime_monitor.is_running():
-            self.realtime_monitor.stop()
-            self.realtime_btn.setText("Real-Time Monitor")
-            self.realtime_btn.setStyleSheet("")
-            self.mode_label.setText("Mode: Manual")
-            self.log("Real-time monitoring stopped")
+            try:
+                self.realtime_monitor.stop()
+                self.realtime_btn.setText("Real-Time Monitor")
+                self.realtime_btn.setStyleSheet("")
+                self.mode_label.setText("Mode: Manual")
+                self.log("Real-time monitoring stopped")
+            except Exception as e:
+                logger.error(f"Error stopping real-time monitor: {e}")
+                QMessageBox.warning(self, "Error", f"Failed to stop monitoring: {str(e)}")
         else:
-            self.realtime_monitor.set_detection_callback(self.on_realtime_detection)
-            self.realtime_monitor.start()
-            self.realtime_btn.setText("Stop Monitor")
-            self.realtime_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {CYBER_COLORS['critical']};
-                    color: white;
-                    border-color: {CYBER_COLORS['critical']};
-                }}
-                QPushButton:hover {{
-                    background-color: #ff2040;
-                }}
-            """)
-            self.mode_label.setText("Mode: Real-Time")
-            self.log("Real-time monitoring started")
-            self.hide()
-            self.tray_icon.show()
+            try:
+                self.realtime_monitor.set_detection_callback(self.on_realtime_detection)
+                success = self.realtime_monitor.start()
+                
+                if success:
+                    self.realtime_btn.setText("Stop Monitor")
+                    self.realtime_btn.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: {CYBER_COLORS['critical']};
+                            color: white;
+                            border-color: {CYBER_COLORS['critical']};
+                        }}
+                        QPushButton:hover {{
+                            background-color: #ff2040;
+                        }}
+                    """)
+                    self.mode_label.setText("Mode: Real-Time")
+                    self.log("Real-time monitoring started")
+                    # Don't hide the window automatically - let user minimize if desired
+                    # self.hide()
+                    # self.tray_icon.show()
+                else:
+                    QMessageBox.warning(self, "Error", "Failed to start real-time monitoring.")
+            except Exception as e:
+                logger.error(f"Error starting real-time monitor: {e}")
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "Error", f"Failed to start monitoring: {str(e)}")
     
     def on_realtime_detection(self, detection: Detection):
         """Handle real-time detection."""
@@ -3267,16 +3362,22 @@ class MainWindow(QMainWindow):
     
     def _handle_realtime_detection(self, detection: Detection):
         """Handle real-time detection in main thread."""
-        self.tray_icon.showMessage(
-            f"Threat Detected: {detection.risk_level.value.upper()}",
-            detection.description[:100],
-            QSystemTrayIcon.Warning,
-            10000
-        )
-        
-        self.detection_table.add_detection(detection)
-        self.update_summary()
-        self.log(f"DETECTION: {detection.detection_type} - {detection.indicator}")
+        try:
+            # Show tray notification if tray icon is visible
+            if self.tray_icon.isVisible():
+                self.tray_icon.showMessage(
+                    f"Threat Detected: {detection.risk_level.value.upper()}",
+                    detection.description[:100],
+                    QSystemTrayIcon.Warning,
+                    10000
+                )
+            
+            # Add to detection table
+            self.detection_table.add_detection(detection)
+            self.update_summary()
+            self.log(f"DETECTION: {detection.detection_type} - {detection.indicator}")
+        except Exception as e:
+            logger.error(f"Error handling real-time detection: {e}")
     
     def on_scan_progress(self, current: int, total: int, message: str):
         """Handle scan progress update."""

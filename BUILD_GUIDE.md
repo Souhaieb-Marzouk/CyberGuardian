@@ -1,8 +1,8 @@
-# CyberGuardian Build Guide
+# CyberGuardian Portable EXE Build Guide
 
-## Complete Guide to Building a Standalone Windows Executable
+## Complete Step-by-Step Guide to Creating a Portable Windows Executable
 
-This guide covers building CyberGuardian into a standalone `.exe` file that can run on any Windows computer without requiring Python to be installed.
+This guide will walk you through the process of converting CyberGuardian into a standalone `.exe` file that can run on any Windows computer without requiring Python or dependencies to be installed.
 
 ---
 
@@ -22,33 +22,18 @@ This guide covers building CyberGuardian into a standalone `.exe` file that can 
 ## 1. Prerequisites
 
 ### System Requirements
-
-| Requirement | Specification |
-|-------------|---------------|
-| Operating System | Windows 10/11 (64-bit) |
-| Python | 3.9 - 3.12 (3.11 recommended) |
-| RAM | 4GB minimum (8GB recommended) |
-| Disk Space | 2GB free |
-
-### ⚠️ Important: Python Version Compatibility
-
-| Python Version | Status | Notes |
-|----------------|--------|-------|
-| 3.9 | ✅ Supported | Stable, good compatibility |
-| 3.10 | ✅ Supported | Stable, good compatibility |
-| 3.11 | ✅ **Recommended** | Best overall compatibility |
-| 3.12 | ✅ Supported | Works well |
-| 3.13+ | ❌ Not Recommended | PyInstaller/pywin32 compatibility issues |
-
-> **If you have Python 3.13 or 3.14**, we strongly recommend installing Python 3.11 or 3.12 alongside it and using a virtual environment.
+- **Operating System**: Windows 10/11 (64-bit)
+- **Python**: 3.10 or later (64-bit)
+- **RAM**: Minimum 4GB (8GB recommended for build)
+- **Disk Space**: At least 2GB free
 
 ### Required Software
 
-| Software | Purpose |
-|----------|---------|
-| Python 3.10-3.12 | Runtime and build environment |
-| Visual C++ Build Tools | Compiling native extensions (yara-python, etc.) |
-| Git | Optional, for version control |
+| Software | Version | Purpose |
+|----------|---------|---------|
+| Python | 3.10+ | Runtime and build environment |
+| Visual C++ Build Tools | Latest | Compiling native extensions |
+| Git | Latest | Optional, for version control |
 
 ---
 
@@ -56,24 +41,21 @@ This guide covers building CyberGuardian into a standalone `.exe` file that can 
 
 ### Step 2.1: Install Python
 
-1. Download Python 3.11 from https://www.python.org/downloads/release/python-3119/
+1. Download Python 3.10+ from https://www.python.org/downloads/
 2. During installation, check these options:
    - ✅ **Add Python to PATH**
    - ✅ **Install pip**
-   - ✅ **Install for all users**
+   - ✅ **Install for all users** (optional but recommended)
 
 3. Verify installation:
    ```cmd
    python --version
-   # Output: Python 3.11.x
-   
    pip --version
-   # Output: pip 23.x.x from ...
    ```
 
 ### Step 2.2: Install Visual C++ Build Tools
 
-Some dependencies (yara-python, psutil) require C++ compilation:
+Some dependencies require C++ compilation:
 
 1. Download from https://visualstudio.microsoft.com/visual-cpp-build-tools/
 2. Run the installer
@@ -94,11 +76,11 @@ UPX reduces executable size by 30-70%:
 
 ## 3. Installing Dependencies
 
-### Step 3.1: Create Virtual Environment
+### Step 3.1: Create Virtual Environment (Recommended)
 
 ```cmd
 # Navigate to project directory
-cd C:\path\to\CyberGuardian
+cd C:\path\to\cyberguardian
 
 # Create virtual environment
 python -m venv venv
@@ -110,87 +92,69 @@ venv\Scripts\activate
 python -m pip install --upgrade pip
 ```
 
-### Step 3.2: Install Requirements
+### Step 3.2: Install Required Packages
 
 ```cmd
 # Install all dependencies
 pip install -r requirements.txt
+
+# Verify PyInstaller is installed
+pip show pyinstaller
 ```
 
-### Step 3.3: Run pywin32 Post-Install (Windows Only)
-
-**This step is CRITICAL for Windows builds:**
+### Step 3.3: Verify Installation
 
 ```cmd
-# Find and run the post-install script
-python "%LOCALAPPDATA%\Programs\Python\Python311\Scripts\pywin32_postinstall.py" -install
-
-# Or if using virtual environment:
-python venv\Scripts\pywin32_postinstall.py -install
+python -c "import PyQt5; import psutil; import yara; print('All dependencies OK')"
 ```
 
-### Step 3.4: Verify Installation
-
-```cmd
-# Test core imports
-python -c "import PyQt5; import psutil; import yara; import win32security; print('All dependencies OK')"
-```
-
-If you see "All dependencies OK", you're ready to build!
+If no errors appear, you're ready to build!
 
 ---
 
 ## 4. Building the Executable
 
-### Option A: Automated Build (Recommended)
+### Option A: Quick Build (Single Command)
 
 ```cmd
-# Run the build script
-python build.py
-
-# Or with clean build
-python build.py --clean
+python build_exe.py
 ```
 
-### Option B: Build and Package
+This creates a single executable file in the `dist/` folder.
+
+### Option B: Custom Build Options
 
 ```cmd
-# Build and create distribution ZIP
-python build.py --clean --package
+# Clean build (recommended for first time)
+python build_exe.py --clean
+
+# Build with console window (for debugging)
+python build_exe.py --console
+
+# Build as directory (faster startup)
+python build_exe.py --onedir
+
+# Build with all optimizations
+python build_exe.py --clean --onefile
 ```
 
 ### Option C: Manual PyInstaller Command
 
 ```cmd
-pyinstaller --onefile --windowed --noconfirm --clean ^
-    --name CyberGuardian ^
-    --uac-admin ^
-    --hidden-import PyQt5 ^
-    --hidden-import PyQt5.QtCore ^
-    --hidden-import PyQt5.QtGui ^
-    --hidden-import PyQt5.QtWidgets ^
-    --hidden-import psutil ^
-    --hidden-import yara ^
-    --hidden-import win32security ^
-    --hidden-import pywintypes ^
-    --hidden-import pythoncom ^
-    main.py
+pyinstaller --onefile --noconsole --uac-admin --name CyberGuardian main.py
 ```
 
-### Build Options
+### Build Options Explained
 
 | Option | Description |
 |--------|-------------|
-| `--clean` | Clean build directories before building |
-| `--package` | Create distribution ZIP after build |
-| `--all` | Clean, build, and package |
-
-### What the Build Script Does
-
-1. **Checks Prerequisites** - Verifies all dependencies are installed
-2. **Creates Assets** - Generates icon files if needed
-3. **Runs PyInstaller** - Compiles Python to executable
-4. **Validates Output** - Checks if executable was created
+| `--onefile` | Creates a single .exe file (slower startup, easier distribution) |
+| `--onedir` | Creates a directory with .exe and dependencies (faster startup) |
+| `--noconsole` | Hides console window (for GUI applications) |
+| `--console` | Shows console window (for debugging) |
+| `--uac-admin` | Requests administrator privileges |
+| `--clean` | Cleans build cache before building |
+| `--no-upx` | Disables UPX compression |
 
 ---
 
@@ -199,13 +163,16 @@ pyinstaller --onefile --windowed --noconfirm --clean ^
 ### Step 5.1: Locate the Executable
 
 ```cmd
-# The executable is created in:
+# For --onefile builds
 dist\CyberGuardian.exe
+
+# For --onedir builds
+dist\CyberGuardian\CyberGuardian.exe
 ```
 
-### Step 5.2: Basic Testing
+### Step 5.2: Run Tests
 
-1. **Launch Test**:
+1. **Basic Launch Test**:
    ```cmd
    dist\CyberGuardian.exe
    ```
@@ -213,114 +180,109 @@ dist\CyberGuardian.exe
 2. **Admin Mode Test**:
    - Right-click `CyberGuardian.exe`
    - Select "Run as Administrator"
-   - Verify full functionality
+   - Verify the title bar shows "[ADMIN]"
 
-### Step 5.3: Feature Testing Checklist
+3. **Feature Tests**:
+   - Run a process scan
+   - Run a file scan on a test folder
+   - Check if YARA rules are loaded
+   - Test AI analysis (if API keys configured)
 
-- [ ] GUI launches without errors
-- [ ] Process scan works
-- [ ] File scan works
-- [ ] Network scan works
-- [ ] Registry scan works
-- [ ] YARA rules load correctly
-- [ ] AI analysis works (if API keys configured)
-- [ ] Reports can be exported
-- [ ] Settings can be saved
+### Step 5.3: Test on Clean Machine
 
-### Step 5.4: Test on Clean Machine
-
-1. Copy `CyberGuardian.exe` to USB drive
-2. Test on another Windows PC without Python
+1. Copy `CyberGuardian.exe` to a USB drive
+2. Test on another Windows PC without Python installed
 3. Verify all features work correctly
 
 ---
 
 ## 6. Creating a Portable Package
 
-### Using the Build Script
+### Step 6.1: Create ZIP Package
 
 ```cmd
-# Build and create package in one command
-python build.py --clean --package
+python build_exe.py --clean --onefile --package
 ```
 
-This creates:
-```
-dist/CyberGuardian/
-├── CyberGuardian.exe
-├── README.md
-├── LICENSE
-├── requirements.txt
-├── QUICKSTART.txt
-└── data/
-    ├── yara_rules/
-    ├── logs/
-    └── quarantine/
-```
+This creates `dist/CyberGuardian_Portable_YYYYMMDD_HHMMSS.zip`
 
-And packages it into:
-```
-dist/CyberGuardian_v1.1.0.zip
+### Step 6.2: Manual Package Creation
+
+1. Create a folder structure:
+   ```
+   CyberGuardian_Portable/
+   ├── CyberGuardian.exe
+   ├── README.txt
+   └── config/
+       └── (optional default config files)
+   ```
+
+2. Compress to ZIP:
+   ```cmd
+   # Using PowerShell
+   Compress-Archive -Path "CyberGuardian_Portable" -DestinationPath "CyberGuardian_Portable.zip"
+   ```
+
+### Step 6.3: Create Installer (Optional)
+
+For a professional installer, use Inno Setup or NSIS:
+
+**Inno Setup Example** (`installer.iss`):
+```iss
+[Setup]
+AppName=CyberGuardian
+AppVersion=1.1.0
+DefaultDirName={pf}\CyberGuardian
+DefaultGroupName=CyberGuardian
+OutputDir=dist
+OutputBaseInstaller=CyberGuardian_Setup
+
+[Files]
+Source: "dist\CyberGuardian.exe"; DestDir: "{app}"
+
+[Icons]
+Name: "{group}\CyberGuardian"; Filename: "{app}\CyberGuardian.exe"
+Name: "{commondesktop}\CyberGuardian"; Filename: "{app}\CyberGuardian.exe"
 ```
 
 ---
 
 ## 7. Troubleshooting
 
-### Build Errors
+### Common Build Errors
 
-#### Error: `ModuleNotFoundError: No module named 'pywintypes'`
+#### Error: `ModuleNotFoundError: No module named 'xxx'`
 
-**Cause:** pywin32 not properly installed or post-install script not run.
-
-**Solution:**
+**Solution**: Add hidden import to the build command:
 ```cmd
-# Uninstall and reinstall pywin32
-pip uninstall pywin32 -y
-pip install pywin32
-
-# Run post-install script
-python "%LOCALAPPDATA%\Programs\Python\Python311\Scripts\pywin32_postinstall.py" -install
-
-# Verify
-python -c "import pywintypes; import pythoncom; print('OK')"
+pyinstaller --hidden-import=xxx --onefile main.py
 ```
 
-#### Error: `set_exe_build_timestamp failed`
+#### Error: `ImportError: DLL load failed`
 
-**Cause:** Python 3.13/3.14 compatibility issue with PyInstaller.
+**Solution**: 
+1. Ensure you're using 64-bit Python
+2. Install Visual C++ Redistributable
+3. Copy missing DLLs to the exe directory
 
-**Solution:**
-1. Use Python 3.11 or 3.12 instead
-2. Or delete old build files:
-   ```cmd
-   del CyberGuardian.spec
-   rmdir /s /q build dist
-   python build.py --clean
-   ```
+#### Error: `PyInstaller cannot find 'PyQt5'`
 
-#### Error: `Failed to retrieve attribute __file__ from module pythoncom`
-
-**Cause:** pywin32 installation corrupted.
-
-**Solution:**
+**Solution**:
 ```cmd
-# Complete reinstall
-pip uninstall pywin32 pywin32-ctypes -y
-pip cache purge
-pip install pywin32
-python Scripts\pywin32_postinstall.py -install
+pip uninstall PyQt5
+pip install PyQt5
+pip install PyQt5-stubs
 ```
 
-#### Error: `yara-python compilation fails`
+#### Error: `Permission denied` during build
 
-**Solution:**
+**Solution**: Run command prompt as Administrator
+
+#### Error: `yara-python` compilation fails
+
+**Solution**:
 ```cmd
 # Install pre-built wheels
-pip uninstall yara-python -y
-pip install yara-python --no-cache-dir
-
-# Or use pipwin
 pip install pipwin
 pipwin install yara-python
 ```
@@ -329,48 +291,22 @@ pipwin install yara-python
 
 #### Application crashes on startup
 
-1. Run with console to see errors:
-   ```cmd
-   # Build with console window
-   python build.py --clean
-   # Then edit build.py to remove --windowed
-   ```
+1. **Check dependencies**: Run with `--console` to see errors
+2. **Check antivirus**: Some security software blocks packed executables
+3. **Run as Admin**: Some features require elevation
 
-2. Check antivirus - some block packed executables
+#### "Access Denied" errors
 
-3. Run as Administrator
-
-#### "Access Denied" during scanning
-
-- Run executable as Administrator
-- Check Windows Defender exclusions
+- Run as Administrator
+- Check Windows Defender settings
 - Verify file permissions
 
 #### YARA rules not found
 
-The build includes YARA rules automatically. If issues occur:
+The build script should include YARA rules automatically. If not:
 ```cmd
-# Verify rules are included
-pyinstaller --add-data "data/yara_rules;yara_rules" main.py
+pyinstaller --add-data "yara_rules;yara_rules" main.py
 ```
-
-### Python 3.13+ Specific Issues
-
-If you must use Python 3.13+:
-
-1. **Update PyInstaller:**
-   ```cmd
-   pip install --upgrade pyinstaller pyinstaller-hooks-contrib
-   ```
-
-2. **Clean build:**
-   ```cmd
-   del CyberGuardian.spec
-   rmdir /s /q build dist
-   python build.py
-   ```
-
-3. **If still failing**, consider using Python 3.11 in a virtual environment.
 
 ---
 
@@ -378,108 +314,130 @@ If you must use Python 3.13+:
 
 ### Reducing Executable Size
 
-1. **Enable UPX Compression:**
+1. **Enable UPX compression**:
    ```cmd
    pyinstaller --upx-dir=C:\upx --onefile main.py
    ```
 
-2. **Exclude Unnecessary Modules:**
-   The build script already excludes common heavy modules.
+2. **Exclude unnecessary modules**:
+   Edit `build.spec` and add to `excludes`:
+   ```python
+   excludes=['tkinter', 'matplotlib', 'numpy', 'pandas']
+   ```
 
-3. **Typical Sizes:**
-   | Configuration | Size |
-   |--------------|------|
-   | With UPX | 30-50 MB |
-   | Without UPX | 50-80 MB |
+3. **Strip debug symbols**:
+   ```cmd
+   pyinstaller --strip --onefile main.py
+   ```
 
 ### Adding Custom Icon
 
-1. Place `icon.ico` in project root
-2. Build script automatically uses it
-3. Icon should be 256x256 for best results
+1. Create or obtain an `.ico` file (256x256 recommended)
+2. Place in project root as `icon.ico`
+3. Build with icon:
+   ```cmd
+   pyinstaller --icon=icon.ico --onefile main.py
+   ```
 
 ### Code Signing (Recommended for Distribution)
 
 1. Obtain a code signing certificate
 2. Sign the executable:
    ```cmd
-   signtool sign /f certificate.pfx /p password /t http://timestamp.digicert.com dist\CyberGuardian.exe
+   signtool sign /f certificate.pfx /p password /t http://timestamp.digicert.com CyberGuardian.exe
    ```
 
-### Creating an Installer
+### Creating Updates
 
-Use Inno Setup for a professional installer:
-
-1. Download Inno Setup from https://jrsoftware.org/isinfo.php
-2. Create `installer.iss`:
-   ```iss
-   [Setup]
-   AppName=CyberGuardian
-   AppVersion=1.1.0
-   DefaultDirName={pf}\CyberGuardian
-   DefaultGroupName=CyberGuardian
-   OutputDir=dist
-   OutputBaseFilename=CyberGuardian_Setup
-   SetupIconFile=assets\icon.ico
-
-   [Files]
-   Source: "dist\CyberGuardian.exe"; DestDir: "{app}"
-   Source: "README.md"; DestDir: "{app}"
-   Source: "LICENSE"; DestDir: "{app}"
-
-   [Icons]
-   Name: "{group}\CyberGuardian"; Filename: "{app}\CyberGuardian.exe"
-   Name: "{commondesktop}\CyberGuardian"; Filename: "{app}\CyberGuardian.exe"
-   ```
-
-3. Compile with Inno Setup Compiler
+1. Update version in `utils/config.py`
+2. Update `build_exe.py` version info
+3. Rebuild with `--clean`
+4. Create new portable package
 
 ---
 
-## Quick Reference Commands
+## Build Script Reference
+
+### Full Command Options
 
 ```cmd
-# Standard build
-python build.py
+python build_exe.py [OPTIONS]
 
-# Clean build
-python build.py --clean
+Options:
+  --clean        Clean build directories before building
+  --onefile      Build as single executable file
+  --onedir       Build as directory (faster startup)
+  --console      Build with console window (debugging)
+  --no-upx       Disable UPX compression
+  --debug        Enable debug mode
+  --no-admin     Build without admin privilege request
+  --package      Create portable ZIP package after build
+```
 
-# Build and package
-python build.py --clean --package
+### Expected Output
 
-# Full clean, build, package
-python build.py --all
+```
+============================================================
+  CYBERGUARDIAN BUILD PROCESS
+============================================================
+
+[*] Checking requirements...
+    ✓ pyinstaller
+    ✓ PyQt5
+    ✓ psutil
+    ✓ yara
+    ...
+[+] All requirements met
+[+] UPX compression available
+
+[*] Creating data directories...
+    Created: yara_rules
+    Created: config
+    ...
+
+[*] Running PyInstaller...
+
+... (build output) ...
+
+============================================================
+  BUILD SUCCESSFUL!
+============================================================
+
+  Build time: 0:02:34
+  Executable: dist\CyberGuardian.exe
+  Size: 45.23 MB
+
+  To run: CyberGuardian.exe
+  Note: Run as Administrator for full functionality
 ```
 
 ---
 
 ## Distribution Checklist
 
-Before distributing:
+Before distributing the executable:
 
-- [ ] Tested on clean Windows 10 machine
-- [ ] Tested on clean Windows 11 machine
+- [ ] Tested on clean Windows 10/11 machine
 - [ ] Tested with and without admin privileges
-- [ ] All scan types work correctly
-- [ ] AI analysis functional (if applicable)
-- [ ] YARA rules included
-- [ ] Real-time monitoring works
-- [ ] Reports generate correctly
-- [ ] No antivirus false positives
-- [ ] README and LICENSE included
-- [ ] (Optional) Code signed
-- [ ] (Optional) Created installer
+- [ ] Verified all scan types work correctly
+- [ ] Checked AI analysis functionality
+- [ ] Confirmed YARA rules are included
+- [ ] Tested real-time monitoring
+- [ ] Verified report generation
+- [ ] Checked for false positives with antivirus
+- [ ] Created README.txt for users
+- [ ] (Optional) Code signed the executable
+- [ ] (Optional) Created installer package
 
 ---
 
-## Additional Resources
+## Support
 
-- **PyInstaller Documentation:** https://pyinstaller.org/
-- **UPX Compression:** https://github.com/upx/upx
-- **Inno Setup:** https://jrsoftware.org/isinfo.php
-- **Code Signing:** https://docs.microsoft.com/en-us/windows/win32/seccrypto/cryptography-tools
+For issues or questions:
+- Check the troubleshooting section above
+- Review PyInstaller documentation: https://pyinstaller.org/
+- Check the project repository for updates
 
 ---
 
-*For issues, check the troubleshooting section above or visit: https://github.com/YOUR_USERNAME/CyberGuardian/issues*
+*Last updated: 2026*

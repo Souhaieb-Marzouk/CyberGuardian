@@ -512,15 +512,32 @@ class RegistryScanner(BaseScanner):
         return evidence
     
     def _is_trusted_entry(self, entry: RegistryEntry) -> bool:
-        """Check if entry is in trusted list."""
+        """Check if entry is in trusted list or user whitelist."""
         key = (entry.key_path, entry.value_name)
         if key in self.TRUSTED_ENTRIES:
             return True
         
-        # Check for Microsoft entries
-        if 'microsoft' in entry.value_data.lower():
-            # Additional verification could be added here
-            pass
+        # Check user whitelist for this registry key path (using 'registry_key' type)
+        if self.whitelist.is_whitelisted(entry.key_path, 'registry_key'):
+            self.logger.debug(f"Registry key in user whitelist: {entry.key_path}")
+            return True
+        
+        # Check user whitelist for full key with value name
+        full_key = f"{entry.key_path}\\{entry.value_name}"
+        if self.whitelist.is_whitelisted(full_key, 'registry_key'):
+            self.logger.debug(f"Full registry entry in user whitelist: {full_key}")
+            return True
+        
+        # Check user whitelist for the value data (could be file path or other indicator)
+        if entry.value_data:
+            # Check as path
+            if self.whitelist.is_whitelisted(entry.value_data, 'path'):
+                self.logger.debug(f"Registry value data in user whitelist: {entry.value_data[:50]}")
+                return True
+            # Check as name (process name, etc.)
+            if self.whitelist.is_whitelisted(entry.value_data, 'name'):
+                self.logger.debug(f"Registry value in name whitelist: {entry.value_data[:50]}")
+                return True
         
         return False
     
