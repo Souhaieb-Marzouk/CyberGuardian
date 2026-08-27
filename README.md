@@ -13,6 +13,15 @@
 
 *A transparent, educational, and highly customizable security tool for everyone*
 
+## 💖 Support the Project
+
+This project is maintained in my free time. If you find it helpful, please consider supporting its continued development.
+
+### One-Time Donations
+- [![Donate with PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://paypal.me/SMAProjects) - One-time contributions
+
+> **Note:** Donations are appreciated but do not buy feature priority or change issue triage. This project remains open and community-driven.[reference:18]
+
 [Features](#-features) • [Installation](#-installation) • [Usage](#-usage) • [Screenshots](#-screenshots) • [Contributing](#-contributing)
 
 </div>
