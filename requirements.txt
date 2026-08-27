@@ -1,0 +1,60 @@
+# CyberGuardian - Malware & Anomaly Detection Tool
+# Required Dependencies
+
+# Core GUI Framework
+PyQt5>=5.15.0
+
+# System & Process Monitoring
+psutil>=5.9.0
+
+# HTTP Requests (for AI APIs and Threat Intel)
+requests>=2.28.0
+urllib3>=1.26.0
+
+# YAML Configuration Parsing
+pyyaml>=6.0.0
+
+# Yara Rules Engine (for malware detection)
+yara-python>=4.3.0
+
+# Secure Credential Storage
+keyring>=23.9.0
+
+# Cryptography (for secure storage)
+cryptography>=38.0.0
+
+# Image processing (for generating icons)
+Pillow>=9.0.0
+
+# ============================================================
+# Windows-specific dependencies (only needed on Windows)
+# IMPORTANT: On Windows, you must run the pywin32 post-install
+# script after installing. See setup_windows.bat for automatic setup.
+# ============================================================
+
+# Windows API access (for registry, signatures, etc.)
+# After pip install, run: python Scripts\pywin32_postinstall.py -install
+pywin32>=305; sys_platform == 'win32'
+
+# WMI for Windows Management Instrumentation
+WMI>=1.5.1; sys_platform == 'win32'
+
+# ============================================================
+# Optional dependencies
+# ============================================================
+
+# Python.NET for advanced Windows features (optional)
+# Note: May not be available for Python 3.13+
+# Uncomment if needed and your Python version supports it
+# pythonnet>=3.0.0; sys_platform == 'win32' and python_version < '3.13'
+
+# Building standalone executable (optional)
+pyinstaller>=6.0.0
+
+# ============================================================
+# Development dependencies (optional)
+# Install with: pip install -r requirements.txt --extra-index-url https://pypi.org/simple/
+# ============================================================
+# pytest>=7.0.0
+# black>=23.0.0
+# flake8>=6.0.0
