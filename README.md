@@ -355,14 +355,28 @@ Enable Real-Time Monitoring for continuous protection:
 
 ---
 
-### What's New in v1.1.0
+### What's New in v1.2.0
 
-- ✅ **Enhanced AI Response Parsing** — Robust JSON extraction with fallback handling
-- ✅ **Improved VirusTotal Integration** — Better IOC detection and malicious IP filtering
-- ✅ **Risk Level Adjustment** — Automatic risk elevation based on VT findings
-- ✅ **Detailed Debug Logging** — Better troubleshooting for threat hunters
-- ✅ **Windows Build Improvements** — pywin32 compatibility, Python version warnings
-- ✅ **Automatic Icon Conversion** — PNG to ICO for executable builds
+Security and reliability release. Highlights:
+
+- 🔐 **Signature checking without PowerShell** — Authenticode is verified through
+  WinVerifyTrust (including catalog-signed system binaries); removes a command
+  injection vector and ~200 process spawns per scan
+- 🛡️ **Report and prompt hardening** — HTML reports escape all scanned content;
+  AI prompts treat evidence as untrusted data and model output is validated
+- 🔑 **Secrets stay in the credential store** — API keys are no longer written to
+  `config.yaml`; existing keys are migrated automatically
+- 🌐 **VirusTotal** — failed lookups are no longer cached as "clean"; results are
+  gathered on a worker thread and actually reach the AI prompt
+- 🎯 **Fewer false positives** — steganography no longer flags every image,
+  registry scans no longer flag every service, beaconing ignores persistent
+  connections, findings are de-duplicated
+- ⚡ **Faster scans** — DNS lookups cached and time-boxed (network scan 181 s → 10 s),
+  per-binary YARA/hash caching, bounding of registry recursion
+- 🧹 **Robustness** — clean shutdown of scan threads, resource handles closed on
+  all paths, junction-safe file walking, no bare `except:`
+
+Full details: [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
