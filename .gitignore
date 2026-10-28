@@ -84,7 +84,6 @@ logs/
 *.log
 quarantine/
 config.json
-build.py
 CyberGuardian.spec
 install_deps.py
 run.bat
@@ -110,3 +109,8 @@ tmp/
 temp/
 *.tmp
 *.bak
+# Runtime directories created when running from source
+config/
+reports/
+cache/
+yara_rules/*.yar

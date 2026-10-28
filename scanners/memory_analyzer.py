@@ -229,7 +229,7 @@ class MemoryAnalyzer:
         'DOMAIN': re.compile(rb'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b'),
         'EMAIL': re.compile(rb'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),
         'BASE64': re.compile(rb'[A-Za-z0-9+/]{40,}={0,2}'),
-        'MUTEX': re.compile(rb'(?:Global\\|Local\\)?[A-Za-z0-9_\-\\]{3,}', re.IGNORECASE),
+        'MUTEX': re.compile(rb'(?:Global\\|Local\\)[A-Za-z0-9_\-]{4,}', re.IGNORECASE),
         'REGISTRY': re.compile(rb'(?:HKEY_[A-Z_]+|HKLM|HKCU|HKCR|HKU)\\[A-Za-z0-9_\\\-]+', re.IGNORECASE),
         'FILE_PATH': re.compile(rb'[A-Z]:\\[A-Za-z0-9_\-\\\.]+(?:\.exe|\.dll|\.sys|\.bat|\.ps1|\.vbs|\.js)', re.IGNORECASE),
         'MUTEX_GLOBAL': re.compile(rb'Global\\[A-Za-z0-9_\-]+'),
@@ -309,7 +309,7 @@ class MemoryAnalyzer:
                 return ctypes.windll.shell32.IsUserAnAdmin()
             else:
                 return os.geteuid() == 0
-        except:
+        except Exception:
             return False
     
     def _setup_windows_api(self):
@@ -652,7 +652,7 @@ class MemoryAnalyzer:
                         context=context,
                         is_suspicious=self._is_suspicious_string(value)
                     ))
-            except:
+            except Exception:
                 pass
         
         # Extract pattern-based strings (URLs, IPs, etc.)
@@ -674,7 +674,7 @@ class MemoryAnalyzer:
                             context=context,
                             is_suspicious=True  # Pattern matches are inherently interesting
                         ))
-                except:
+                except Exception:
                     pass
         
         return strings
@@ -801,7 +801,7 @@ class MemoryAnalyzer:
                                 pe_sig = memory_data[pe_offset:pe_offset+4]
                                 if pe_sig == b'PE\x00\x00':
                                     evidence['pe_valid'] = True
-                        except:
+                        except Exception:
                             pass
                     
                     # Check for shellcode patterns
@@ -828,7 +828,7 @@ class MemoryAnalyzer:
                 ))
             
             # Check for process hollowing: Unusual memory layout
-            if region.memory_type == 'IMAGE' and region.protection in ['XRW', 'RW']:
+            if region.memory_type == 'IMAGE' and region.protection == 'XRW':
                 # This could indicate process hollowing where .text section is writable
                 injections.append(InjectedCode(
                     process_id=pid,
@@ -1029,7 +1029,7 @@ class MemoryAnalyzer:
         try:
             ip_obj = ipaddress.ip_address(ip)
             return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
-        except:
+        except Exception:
             return False
     
     def _is_common_domain(self, domain: str) -> bool:
@@ -1111,7 +1111,7 @@ class MemoryAnalyzer:
                 proc = psutil.Process(pid)
                 process_name = proc.name()
                 process_path = proc.exe() or ""
-            except:
+            except Exception:
                 pass
         
         result = ProcessMemoryInfo(
@@ -1188,8 +1188,15 @@ class MemoryAnalyzer:
                         strings = self.extract_strings(memory_data)
                         
                         # Update addresses
+                        lookups = 0
                         for s in strings:
-                            s.address = region.base_address + memory_data.find(s.value.encode()[:100]) if s.value else region.base_address
+                            if s.is_suspicious and s.value and lookups < 20:
+                                needle = s.value.encode('utf-8', errors='ignore')[:100]
+                                index = memory_data.find(needle) if needle else -1
+                                s.address = region.base_address + max(index, 0)
+                                lookups += 1
+                            else:
+                                s.address = region.base_address
                         
                         all_strings.extend(strings)
                         
@@ -1218,7 +1225,7 @@ class MemoryAnalyzer:
                         {'path': dll.path, 'name': Path(dll.path).name if dll.path else ''}
                         for dll in proc.memory_maps() if dll.path
                     ]
-                except:
+                except Exception:
                     pass
             
             if progress_callback:
@@ -1317,7 +1324,7 @@ class MemoryAnalyzer:
                 try:
                     proc = psutil.Process(pid)
                     process_name = proc.name()
-                except:
+                except Exception:
                     process_name = f"PID-{pid}"
             else:
                 process_name = f"PID-{pid}"
@@ -1488,7 +1495,7 @@ class MemoryAnalyzer:
         """Destructor - ensure cleanup."""
         try:
             self.secure_cleanup()
-        except:
+        except Exception:
             pass
 
 

@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Set
 from pathlib import Path
 import threading
 import time
@@ -88,17 +88,44 @@ class ScanResult:
     
     # Statistics
     stats: Dict[str, Any] = field(default_factory=dict)
-    
+
+    # Targets that already produced at least one detection (used so the
+    # summary counts items, not individual findings).
+    _counted_targets: Set[str] = field(default_factory=set, repr=False)
+    # Identical findings are reported once (e.g. the same unsigned binary
+    # running as a dozen processes).
+    _seen_findings: Set[str] = field(default_factory=set, repr=False)
+
     def add_detection(self, detection: Detection) -> None:
-        """Add a detection to the results."""
+        """Add a detection to the results.
+
+        Duplicate findings (same type and indicator) are collapsed, and summary
+        counters are per *item*: one target that produces several findings
+        counts once, while ``clean_items`` is derived from flagged targets.
+        """
+        finding_key = (
+            f"{(detection.detection_type or '').lower()}|"
+            f"{(detection.indicator or '').lower()}"
+        )
+        if finding_key in self._seen_findings:
+            return
+        self._seen_findings.add(finding_key)
+
         self.detections.append(detection)
-        
-        if detection.risk_level in [RiskLevel.CRITICAL, RiskLevel.HIGH]:
+
+        key = f"{detection.indicator_type}|{(detection.indicator or '').lower()}"
+        if key in self._counted_targets:
+            return
+        self._counted_targets.add(key)
+
+        if detection.risk_level in (RiskLevel.CRITICAL, RiskLevel.HIGH):
             self.malicious_items += 1
-        elif detection.risk_level == RiskLevel.MEDIUM:
+        elif detection.risk_level in (RiskLevel.MEDIUM, RiskLevel.LOW):
             self.suspicious_items += 1
-        elif detection.risk_level == RiskLevel.LOW:
-            self.suspicious_items += 1
+
+    def finalize_counts(self) -> None:
+        """Derive ``clean_items`` from ``total_items`` and flagged targets."""
+        self.clean_items = max(0, self.total_items - len(self._counted_targets))
     
     def get_summary(self) -> Dict[str, Any]:
         """Get a summary of the scan results."""

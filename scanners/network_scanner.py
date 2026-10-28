@@ -211,6 +211,7 @@ class NetworkScanner(BaseScanner):
         
         # Track scanned PIDs to avoid duplicate memory scans
         self._scanned_pids: Set[int] = set()
+        self.scan_warning: str = "" 
     
     @property
     def scanner_name(self) -> str:
@@ -243,6 +244,10 @@ class NetworkScanner(BaseScanner):
         )
         
         self.reset_cancel()
+        self._scanned_pids.clear()
+        self.scan_warning = ""
+        self._dns_lookup_cache = {}
+        self._dns_deadline = time.time() + 8.0
         
         try:
             # Collect system network information
@@ -291,7 +296,12 @@ class NetworkScanner(BaseScanner):
             # Deep analysis: Check for suspicious network patterns
             if deep_analysis and not self.is_cancelled():
                 self._deep_network_analysis(result)
-            
+
+            result.finalize_counts()
+            if self.scan_warning:
+                result.stats['warning'] = self.scan_warning
+                self.logger.warning(self.scan_warning)
+
             result.status = ScanStatus.COMPLETED
             
         except Exception as e:
@@ -364,7 +374,7 @@ class NetworkScanner(BaseScanner):
                     elif 'Time to Live' in line:
                         try:
                             current_entry['ttl'] = int(line.split(':', 1)[1].strip())
-                        except:
+                        except Exception:
                             pass
                 
                 # Don't forget last entry
@@ -456,7 +466,8 @@ class NetworkScanner(BaseScanner):
                         ipv4_addrs.append(addr.address)
                     elif addr.family == socket.AF_INET6:
                         ipv6_addrs.append(addr.address)
-                    elif hasattr(socket, 'AF_LINK') and addr.family == socket.AF_LINK:
+                    elif addr.family == getattr(psutil, 'AF_LINK', object()):
+                        # socket.AF_LINK does not exist on Windows
                         mac_addr = addr.address
                 
                 # Get interface stats
@@ -518,7 +529,7 @@ class NetworkScanner(BaseScanner):
                                             'interface': parts[3],
                                             'metric': parts[4] if len(parts) > 4 else ''
                                         })
-                                except:
+                                except Exception:
                                     pass
                         
                         # Stop at persistent routes section
@@ -614,12 +625,12 @@ class NetworkScanner(BaseScanner):
                             if self._deep_analysis:
                                 try:
                                     process_cmdline = ' '.join(proc.cmdline()) if proc.cmdline() else ""
-                                except:
+                                except Exception:
                                     pass
                                 
                                 try:
                                     process_owner = proc.username()
-                                except:
+                                except Exception:
                                     pass
                                 
                                 # Get loaded modules (DLLs)
@@ -627,9 +638,9 @@ class NetworkScanner(BaseScanner):
                                     for dll in proc.memory_maps():
                                         if dll.path.endswith('.dll'):
                                             loaded_modules.append(dll.path)
-                                except:
+                                except Exception:
                                     pass
-                        except:
+                        except Exception:
                             process_name = f"PID-{conn.pid}"
                     
                     # Determine protocol
@@ -641,30 +652,21 @@ class NetworkScanner(BaseScanner):
                     is_whitelisted = False
                     if remote_ip:
                         is_whitelisted = self.whitelist.is_whitelisted(remote_ip, 'ip')
-                    if not is_whitelisted and self._is_trusted_port(local_port):
-                        is_whitelisted = True
+                    # NOTE: the local port must never whitelist a connection -
+                    # every C2 channel on 443 used to be marked clean here.
                     
-                    # Reverse DNS lookup (or use DNS cache in deep mode)
+                    # Reverse DNS lookup (or use DNS cache in deep mode).
+                    # Lookups are cached per scan and bounded by a time budget:
+                    # resolving every public IP used to add minutes to a scan.
                     remote_hostname = ""
                     if remote_ip:
                         if self._deep_analysis:
-                            # Check DNS cache first
                             for entry in self._dns_cache:
                                 if remote_ip in entry.ip_addresses:
                                     remote_hostname = entry.hostname
                                     break
-                            
-                            # If not in cache, do lookup
-                            if not remote_hostname and self.config.config.scan.network_resolve_dns:
-                                try:
-                                    remote_hostname = self.threat_intel.reverse_dns(remote_ip) or ""
-                                except:
-                                    pass
-                        elif self.config.config.scan.network_resolve_dns:
-                            try:
-                                remote_hostname = self.threat_intel.reverse_dns(remote_ip) or ""
-                            except:
-                                pass
+                        if not remote_hostname and self.config.config.scan.network_resolve_dns:
+                            remote_hostname = self._resolve_hostname(remote_ip)
                         
                         if remote_hostname and self.whitelist.is_whitelisted(remote_hostname, 'domain'):
                             is_whitelisted = True
@@ -687,7 +689,7 @@ class NetworkScanner(BaseScanner):
                                 for f in proc_dir.iterdir():
                                     if f.is_file() and f.suffix.lower() in ['.exe', '.dll', '.sys', '.dat']:
                                         related_files.append(str(f))
-                        except:
+                        except Exception:
                             pass
                     
                     conn_info = ConnectionInfo(
@@ -718,9 +720,44 @@ class NetworkScanner(BaseScanner):
         
         except ImportError:
             self.logger.error("psutil not available for network scanning")
-        
+        except (psutil.AccessDenied, PermissionError) as e:
+            # Connection table access needs elevation on some systems; report
+            # what was collected instead of failing the whole scan.
+            self.logger.warning(f"Access denied reading the connection table: {e}")
+            self.scan_warning = (
+                "Connection table access denied - run as Administrator for "
+                "complete network results"
+            )
+        except Exception as e:
+            self.logger.error(f"Network enumeration failed: {e}")
+            self.scan_warning = f"Network enumeration failed: {e}"
+
         return connections
     
+    def _resolve_hostname(self, ip: str) -> str:
+        """Reverse-resolve an IP with caching and a per-scan time budget."""
+        cache = getattr(self, '_dns_lookup_cache', None)
+        if cache is None:
+            cache = self._dns_lookup_cache = {}
+        if ip in cache:
+            return cache[ip]
+
+        if self._is_private_ip(ip) or ip.startswith('127.') or ip in ('::1', '0.0.0.0'):
+            cache[ip] = ''
+            return ''
+
+        deadline = getattr(self, '_dns_deadline', 0)
+        if deadline and time.time() > deadline:
+            cache[ip] = ''
+            return ''
+
+        try:
+            hostname = self.threat_intel.reverse_dns(ip) or ''
+        except Exception:
+            hostname = ''
+        cache[ip] = hostname
+        return hostname
+
     def _is_trusted_port(self, port: int) -> bool:
         """Check if port is a trusted service port."""
         return port in self.TRUSTED_PORTS
@@ -1060,34 +1097,6 @@ class NetworkScanner(BaseScanner):
             )
             detections.append(detection)
         
-        # Check for high-numbered ports with significant data transfer
-        if conn.remote_port > 49152:
-            browser_processes = {'chrome.exe', 'firefox.exe', 'msedge.exe', 'iexplore.exe', 
-                                'opera.exe', 'brave.exe', 'vivaldi.exe'}
-            if conn.process_name.lower() not in browser_processes:
-                detection = Detection(
-                    detection_id=self._generate_detection_id(),
-                    detection_type='network_ephemeral_port',
-                    indicator=f"{conn.remote_ip}:{conn.remote_port}",
-                    indicator_type='network',
-                    risk_level=RiskLevel.LOW,
-                    confidence=0.4,
-                    description=f"Connection to ephemeral port: {conn.remote_port}",
-                    detection_reason="High port number may indicate custom C2 protocol",
-                    remediation=[
-                        "Monitor connection behavior",
-                        "Verify process legitimacy"
-                    ],
-                    process_name=conn.process_name,
-                    process_id=conn.pid,
-                    evidence={
-                        'remote_ip': conn.remote_ip,
-                        'remote_port': conn.remote_port,
-                        'process_name': conn.process_name
-                    }
-                )
-                detections.append(detection)
-        
         return detections
     
     def _check_dns_hijacking(self, conn: ConnectionInfo) -> List[Detection]:
@@ -1312,7 +1321,8 @@ class NetworkScanner(BaseScanner):
         if self._memory_analyzer:
             try:
                 self._memory_analyzer.secure_cleanup()
-            except:
+                self._memory_analyzer = None
+            except Exception:
                 pass
     
     def _analyze_network_process_memory(self, result: ScanResult) -> int:
@@ -1613,114 +1623,128 @@ class NetworkScanner(BaseScanner):
         try:
             ip_obj = ipaddress.ip_address(ip)
             return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
-        except:
+        except Exception:
             return False
     
     def detect_beaconing(self, observation_window: int = 300) -> List[Detection]:
+        """Detect periodic C2-style connections over time.
+
+        Samples are only recorded when a connection *re-appears* after having
+        been absent.  The previous implementation appended a timestamp on every
+        poll for every connection, so any long-lived TLS session produced a
+        perfect "beacon" after five polls.
         """
-        Detect beaconing behavior over time.
-        Must be called repeatedly to build connection history.
-        
-        Args:
-            observation_window: Time window in seconds to analyze
-        
-        Returns:
-            List of detections for beaconing behavior
-        """
-        detections = []
+        detections: List[Detection] = []
         current_time = time.time()
-        
-        # Get current connections
+
+        appearances = getattr(self, '_connection_appearances', None)
+        if appearances is None:
+            appearances = self._connection_appearances = {}
+        first_seen = getattr(self, '_connection_first_seen', None)
+        if first_seen is None:
+            first_seen = self._connection_first_seen = {}
+        reported = getattr(self, '_beacon_reported', None)
+        if reported is None:
+            reported = self._beacon_reported = set()
+
+        previous = getattr(self, '_connection_snapshot', set())
+
         connections = self._enumerate_connections()
-        current_snapshot = {
+        current = {
             (c.remote_ip, c.remote_port, c.pid)
-            for c in connections if c.remote_ip  # Only track connections with remote IP
+            for c in connections
+            if c.remote_ip
         }
-        
-        # Record timestamps for each connection
+
+        by_key = {}
         for conn in connections:
-            if conn.remote_ip:
-                key = f"{conn.remote_ip}:{conn.remote_port}:{conn.pid}"
-                self._connection_history[key].append(current_time)
-        
-        # Trim history to observation window
-        for key in self._connection_history:
-            self._connection_history[key] = [
-                t for t in self._connection_history[key]
-                if current_time - t <= observation_window
-            ]
-        
-        # Analyze for beaconing patterns
-        for key, timestamps in self._connection_history.items():
-            if len(timestamps) < 5:  # Need enough samples
+            if not conn.remote_ip:
                 continue
-            
-            # Sort timestamps
+            key = (conn.remote_ip, conn.remote_port, conn.pid)
+            by_key[key] = conn
+
+        for key in current:
+            if key not in previous:
+                appearances.setdefault(key, []).append(current_time)
+                first_seen.setdefault(key, current_time)
+
+        self._connection_snapshot = current
+
+        # Drop state for connections that are gone (bounded memory).
+        for key in list(appearances.keys()):
+            times = [t for t in appearances[key] if current_time - t <= observation_window]
+            if times:
+                appearances[key] = times
+            else:
+                appearances.pop(key, None)
+                first_seen.pop(key, None)
+                reported.discard(key)
+
+        for key, timestamps in list(appearances.items()):
+            if len(timestamps) < 4:
+                continue
+            if key in reported:
+                continue
+
             timestamps = sorted(timestamps)
-            
-            # Calculate intervals
             intervals = [
-                timestamps[i+1] - timestamps[i]
+                timestamps[i + 1] - timestamps[i]
                 for i in range(len(timestamps) - 1)
             ]
-            
-            if not intervals:
+            if len(intervals) < 3:
                 continue
-            
-            # Calculate mean and variance
+
             mean_interval = sum(intervals) / len(intervals)
+            if not (10.0 <= mean_interval <= 3600.0):
+                continue
+
             variance = sum((i - mean_interval) ** 2 for i in intervals) / len(intervals)
             std_dev = variance ** 0.5
-            
-            # Check for regular intervals (low variance)
-            if mean_interval >= self.BEACON_INTERVAL_MIN and mean_interval <= self.BEACON_INTERVAL_MAX:
-                # Low coefficient of variation indicates beaconing
-                cv = std_dev / mean_interval if mean_interval > 0 else 0
-                
-                if cv < self.BEACON_TOLERANCE:
-                    # Parse key
-                    parts = key.rsplit(':', 2)
-                    remote_ip = parts[0]
-                    remote_port = int(parts[1])
-                    pid = int(parts[2])
-                    
-                    # Find process name
-                    process_name = "unknown"
-                    for conn in connections:
-                        if conn.remote_ip == remote_ip and conn.remote_port == remote_port and conn.pid == pid:
-                            process_name = conn.process_name
-                            break
-                    
-                    detection = Detection(
-                        detection_id=self._generate_detection_id(),
-                        detection_type='network_beaconing',
-                        indicator=f"{remote_ip}:{remote_port}",
-                        indicator_type='network',
-                        risk_level=RiskLevel.HIGH,
-                        confidence=0.75,
-                        description=f"Beaconing detected: {mean_interval:.1f}s interval",
-                        detection_reason=f"Regular connection interval ({mean_interval:.1f}s) indicates C2 beaconing",
-                        remediation=[
-                            f"Block IP: {remote_ip}",
-                            f"Terminate process: {process_name} (PID: {pid})",
-                            "Investigate for malware",
-                            "Check for data exfiltration"
-                        ],
-                        process_name=process_name,
-                        process_id=pid,
-                        evidence={
-                            'remote_ip': remote_ip,
-                            'remote_port': remote_port,
-                            'mean_interval': mean_interval,
-                            'std_deviation': std_dev,
-                            'sample_count': len(timestamps),
-                            'intervals': intervals[:10]  # First 10 intervals
-                        }
-                    )
-                    detections.append(detection)
-        
+            cv = std_dev / mean_interval if mean_interval else 1.0
+
+            if cv >= 0.25:
+                continue
+
+            remote_ip, remote_port, pid = key
+            conn = by_key.get(key)
+            process_name = conn.process_name if conn else "unknown"
+
+            reported.add(key)
+            detections.append(Detection(
+                detection_id=self._generate_detection_id(),
+                detection_type='network_beaconing',
+                indicator=f"{remote_ip}:{remote_port}",
+                indicator_type='network',
+                risk_level=RiskLevel.HIGH,
+                confidence=0.7,
+                description=(
+                    f"Periodic connections to {remote_ip}:{remote_port} "
+                    f"every ~{mean_interval:.0f}s"
+                ),
+                detection_reason=(
+                    f"{len(timestamps)} re-established connections with a "
+                    f"coefficient of variation of {cv:.2f} suggest C2 beaconing"
+                ),
+                remediation=[
+                    f"Block IP: {remote_ip}",
+                    f"Investigate process: {process_name} (PID: {pid})",
+                    "Check for data exfiltration",
+                    "Review the process for malware",
+                ],
+                process_name=process_name,
+                process_id=pid,
+                evidence={
+                    'remote_ip': remote_ip,
+                    'remote_port': remote_port,
+                    'mean_interval': round(mean_interval, 2),
+                    'std_deviation': round(std_dev, 2),
+                    'coefficient_of_variation': round(cv, 3),
+                    'sample_count': len(timestamps),
+                },
+            ))
+
         return detections
-    
+
     def get_network_summary(self) -> Dict[str, Any]:
         """Get a summary of network state (useful for reports)."""
         connections = self._enumerate_connections()

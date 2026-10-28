@@ -88,6 +88,7 @@ class CacheManager:
         self.domain_cache_file = cache_dir / "domain_cache.json"
         
         # In-memory caches
+        self.max_entries = 5000
         self.hash_cache: Dict[str, Dict] = self._load_cache(self.hash_cache_file)
         self.ip_cache: Dict[str, Dict] = self._load_cache(self.ip_cache_file)
         self.domain_cache: Dict[str, Dict] = self._load_cache(self.domain_cache_file)
@@ -114,8 +115,11 @@ class CacheManager:
         """Check if cache entry is expired."""
         if 'timestamp' not in entry:
             return True
-        
-        cached_time = datetime.fromisoformat(entry['timestamp'])
+
+        try:
+            cached_time = datetime.fromisoformat(entry['timestamp'])
+        except (TypeError, ValueError):
+            return True
         return datetime.utcnow() - cached_time > timedelta(hours=self.ttl_hours)
     
     def get_hash(self, hash_value: str) -> Optional[HashLookupResult]:
@@ -123,7 +127,11 @@ class CacheManager:
         with self._lock:
             entry = self.hash_cache.get(hash_value.lower())
             if entry and not self._is_expired(entry):
-                return HashLookupResult(**entry)
+                # 'timestamp' is cache metadata, not a dataclass field; passing
+                # it raised TypeError on every cache hit.
+                return HashLookupResult(
+                    **{k: v for k, v in entry.items() if k != 'timestamp'}
+                )
         return None
     
     def set_hash(self, result: HashLookupResult) -> None:
@@ -132,6 +140,7 @@ class CacheManager:
         # Don't cache errors, no_api_key, or unknown results
         if result.is_malicious or (result.source == 'virustotal' and result.confidence in ['high', 'medium']):
             with self._lock:
+                self._prune(self.hash_cache)
                 self.hash_cache[result.hash_value.lower()] = {
                     'hash_value': result.hash_value,
                     'hash_type': result.hash_type,
@@ -147,6 +156,16 @@ class CacheManager:
                 }
                 self._save_cache(self.hash_cache_file, self.hash_cache)
     
+    def _prune(self, cache: Dict[str, Dict]) -> None:
+        """Drop the oldest entries so the on-disk cache stays bounded."""
+        if len(cache) < self.max_entries:
+            return
+        ordered = sorted(
+            cache.items(), key=lambda item: item[1].get('timestamp', '')
+        )
+        for key, _ in ordered[: max(1, len(ordered) // 4)]:
+            cache.pop(key, None)
+
     def get_ip(self, ip: str) -> Optional[IPReputationResult]:
         """Get cached IP reputation result."""
         with self._lock:
@@ -227,32 +246,30 @@ class ThreatIntelManager:
     Handles VirusTotal, AbuseIPDB, and other threat feeds.
     """
     
-    # Known malicious hashes (sample data for offline detection)
-    KNOWN_MALICIOUS_HASHES = {
-        # WannaCry
-        'ed01ebfbc9eb5bbea545af4d01bf5f1071661840480439c6e5babe8e080e41aa': 'WannaCry Ransomware',
-        # Emotet
-        'a7e534d8e72d5c5a8c3c5a8b5c8a5c8a5c8a5c8a5c8a5c8a5c8a5c8a5c8a': 'Emotet Trojan',
-        # Ryuk
-        'b7e534d8e72d5c5a8c3c5a8b5c8a5c8a5c8a5c8a5c8a5c8a5c8a5c8a5c8a': 'Ryuk Ransomware',
-        # TrickBot
-        'c7e534d8e72d5c5a8c3c5a8b5c8a5c8a5c8a5c8a5c8a5c8a5c8a5c8a5c8a': 'TrickBot',
-    }
+    # Known malicious hashes.  Empty by design: the previous entries were
+    # fabricated placeholder values (only the WannaCry hash was real), which
+    # risked both false positives and false confidence.  Load a real IOC feed
+    # instead.
+    KNOWN_MALICIOUS_HASHES: Dict[str, str] = {}
     
-    # Known malicious IPs (sample data)
-    KNOWN_MALICIOUS_IPS = {
-        '185.220.101.0': 'Tor Exit Node',
-        '185.220.101.1': 'Tor Exit Node',
-        '23.129.64.0': 'Malicious C2',
-        '23.129.64.1': 'Malicious C2',
-    }
+    # Local blocklists.  Intentionally empty: the previous "sample data"
+    # marked real IP ranges as C2 infrastructure and fabricated hashes, which
+    # produced unfounded malicious verdicts.  Populate from a real feed instead.
+    KNOWN_MALICIOUS_IPS: Dict[str, str] = {}
+    KNOWN_MALICIOUS_DOMAINS: Dict[str, str] = {}
     
-    # Known malicious domains (sample data)
-    KNOWN_MALICIOUS_DOMAINS = {
-        'malware-test.com': 'Test Domain',
-        'eicar.com': 'Test Domain',
-    }
-    
+    def _get_api_key(self, name: str) -> str:
+        """Return an API key from the OS credential store, then config."""
+        try:
+            from utils.secure_storage import get_secure_storage
+            key = get_secure_storage().get_api_key(name)
+            if key:
+                return key
+        except Exception as e:
+            logger.debug(f"Secure storage unavailable for {name}: {e}")
+
+        return getattr(self.config.config.api, name, '') or ''
+
     def __init__(self):
         self.config = get_config()
         self.cache = CacheManager(ttl_hours=self.config.config.api.cache_ttl_hours)
@@ -280,24 +297,26 @@ class ThreatIntelManager:
         return session
     
     def _rate_limit(self, api: str) -> None:
-        """Apply rate limiting for API calls."""
+        """Apply rate limiting for API calls.
+
+        The wait happens outside the lock so one caller sleeping does not block
+        every other scanner thread.
+        """
+        min_interval = 15 if api == 'virustotal' else 10
+
         with self._rate_limit_lock:
+            last = (
+                self._last_vt_request if api == 'virustotal'
+                else self._last_abuseipdb_request
+            )
+            wait = min_interval - (time.time() - last)
             if api == 'virustotal':
-                # VirusTotal free tier: 4 requests per minute
-                min_interval = 15  # seconds
-                elapsed = time.time() - self._last_vt_request
-                if elapsed < min_interval:
-                    time.sleep(min_interval - elapsed)
-                self._last_vt_request = time.time()
-            
-            elif api == 'abuseipdb':
-                # AbuseIPDB: 1000 requests per day = ~1 per 86 seconds
-                # We'll be conservative with 1 per 10 seconds
-                min_interval = 10
-                elapsed = time.time() - self._last_abuseipdb_request
-                if elapsed < min_interval:
-                    time.sleep(min_interval - elapsed)
-                self._last_abuseipdb_request = time.time()
+                self._last_vt_request = time.time() + max(0.0, wait)
+            else:
+                self._last_abuseipdb_request = time.time() + max(0.0, wait)
+
+        if wait > 0:
+            time.sleep(min(wait, min_interval))
     
     def lookup_hash(
         self,
@@ -348,7 +367,7 @@ class ThreatIntelManager:
             return result
         
         # Query online API if enabled and key available
-        if use_online and self.config.config.api.virustotal_api_key:
+        if use_online and self._get_api_key('virustotal_api_key'):
             return self._query_virustotal_hash(hash_value, hash_type)
         
         # No result found
@@ -377,7 +396,7 @@ class ThreatIntelManager:
         hash_type: str
     ) -> HashLookupResult:
         """Query VirusTotal for hash information."""
-        api_key = self.config.config.api.virustotal_api_key
+        api_key = self._get_api_key('virustotal_api_key')
         
         if not api_key:
             return HashLookupResult(
@@ -421,20 +440,20 @@ class ThreatIntelManager:
                     first_seen=attributes.get('first_submission_date'),
                     last_seen=attributes.get('last_analysis_date'),
                     source='virustotal',
-                    confidence='high' if malicious > 5 else ('medium' if malicious > 0 else 'high')
+                    confidence='high' if malicious > 5 else ('medium' if malicious > 0 else 'low')
                 )
                 
                 self.cache.set_hash(result)
                 return result
             
             elif response.status_code == 404:
-                # Hash not found in VT database
+                # Unknown to VirusTotal - not evidence of being clean.
                 result = HashLookupResult(
                     hash_value=hash_value,
                     hash_type=hash_type,
                     is_malicious=False,
                     source='virustotal',
-                    confidence='medium'
+                    confidence='low'
                 )
                 self.cache.set_hash(result)
                 return result

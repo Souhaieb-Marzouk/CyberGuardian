@@ -5,6 +5,7 @@ Manages whitelists for processes, files, registry entries,
 and network connections to minimize false positives.
 """
 
+import os
 import json
 import hashlib
 import logging
@@ -107,13 +108,23 @@ class WhitelistManager:
         r'^C:\\Program Files\\Windows Security\\',
     ]
     
-    # Trusted registry key patterns
+    # Trusted registry key patterns.  Note: service keys are deliberately NOT
+    # trusted as a whole - service creation is one of the most common
+    # persistence techniques and used to be silently whitelisted here.
     TRUSTED_REGISTRY_KEYS = [
         r'^HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run$',  # Standard autorun
         r'^HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run$',
         r'^HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run$',
-        r'^HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\',  # Services
     ]
+
+    # Registry hive aliases, normalised before whitelist matching.
+    HIVE_ALIASES = {
+        'hklm\\': 'hkey_local_machine\\',
+        'hkcu\\': 'hkey_current_user\\',
+        'hkcr\\': 'hkey_classes_root\\',
+        'hku\\': 'hkey_users\\',
+        'hkcc\\': 'hkey_current_config\\',
+    }
     
     # Trusted Microsoft IPs and domains
     TRUSTED_NETWORK_INDICATORS = {
@@ -167,6 +178,7 @@ class WhitelistManager:
             'registry_key': [],  # For registry key whitelisting
         }
         self._compile_regex_patterns()
+        self._system_processes_lower = {p.lower() for p in self.SYSTEM_PROCESSES}
         self._load_whitelist()
         self._initialize_system_whitelist()
     
@@ -371,20 +383,42 @@ class WhitelistManager:
         
         return False
     
+    def is_trusted_path(self, path: str) -> bool:
+        """Return True when *path* is inside a protected Windows directory.
+
+        The path is normalised before matching so that a path such as
+        ``C:\\Windows\\System32\\..\\Temp\\evil.exe`` cannot masquerade as a
+        trusted system binary.
+        """
+        if not path:
+            return False
+        candidate = str(path).strip().strip('"').replace('/', '\\')
+        try:
+            candidate = os.path.normpath(candidate)
+        except (OSError, ValueError):
+            return False
+        return any(pattern.match(candidate) for pattern in self.trusted_path_patterns)
+
     def _is_trusted_path(self, path: str) -> bool:
-        """Check if path matches trusted path patterns."""
-        for pattern in self.trusted_path_patterns:
-            if pattern.match(path):
-                return True
-        return False
-    
+        """Backwards-compatible alias for :meth:`is_trusted_path`."""
+        return self.is_trusted_path(path)
+
+    def is_trusted_registry_key(self, key_path: str) -> bool:
+        """Return True when a registry key matches a trusted pattern."""
+        if not key_path:
+            return False
+        candidate = key_path.strip().lower()
+        for alias, full in self.HIVE_ALIASES.items():
+            if candidate.startswith(alias):
+                candidate = full + candidate[len(alias):]
+                break
+        return any(
+            pattern.match(candidate) for pattern in self.trusted_registry_patterns
+        )
+
     def _is_trusted_registry_key(self, key_path: str) -> bool:
-        """Check if registry key matches trusted patterns."""
-        key_path = key_path.lower().strip()
-        for pattern in self.trusted_registry_patterns:
-            if pattern.match(key_path):
-                return True
-        return False
+        """Backwards-compatible alias for :meth:`is_trusted_registry_key`."""
+        return self.is_trusted_registry_key(key_path)
     
     def _is_trusted_domain(self, domain: str) -> bool:
         """Check if domain or parent domain is trusted."""
@@ -416,10 +450,13 @@ class WhitelistManager:
     
     def is_system_process(self, process_name: str) -> bool:
         """Check if process is a known system process."""
-        return process_name.lower() in [p.lower() for p in self.SYSTEM_PROCESSES]
+        return (process_name or "").lower() in self._system_processes_lower
     
     def is_trusted_signature(self, publisher: str) -> bool:
         """Check if publisher is in trusted list."""
+        if not publisher or not publisher.strip():
+            # An empty publisher must never match: ``"" in "microsoft"`` is True.
+            return False
         publisher = publisher.lower().strip()
         for trusted in self.TRUSTED_PUBLISHERS:
             if trusted.lower() in publisher or publisher in trusted.lower():

@@ -7,7 +7,6 @@ Provides a unified interface for rule matching across all scanners.
 
 import os
 import logging
-import yara
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Any, Callable
 from dataclasses import dataclass, field
@@ -18,7 +17,14 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from utils.config import YARA_RULES_DIR, CACHE_DIR, get_config
+try:
+    import yara
+    YARA_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on optional native package
+    yara = None  # type: ignore[assignment]
+    YARA_AVAILABLE = False
+
+from utils.config import YARA_RULES_DIR, CACHE_DIR, USER_DATA_DIR, get_config
 from utils.logging_utils import get_logger
 
 logger = get_logger('scanners.yara_manager')
@@ -41,7 +47,7 @@ class YaraMatch:
 class YaraRuleSet:
     """Represents a compiled set of Yara rules."""
     name: str
-    compiled_rules: yara.Rules
+    compiled_rules: Any
     source_path: Path
     rule_count: int
     last_compiled: datetime
@@ -75,14 +81,25 @@ class YaraManager:
     ]
     
     def __init__(self, rules_dir: Optional[Path] = None):
-        self.rules_dir = rules_dir or YARA_RULES_DIR
+        # Rules live in the user data directory: the application directory is
+        # read-only for frozen (PyInstaller) builds.
+        self.rules_dir = Path(rules_dir) if rules_dir else (Path(USER_DATA_DIR) / "yara_rules")
+        self.bundled_rules_dir = Path(YARA_RULES_DIR)
         self.compiled_rulesets: Dict[str, YaraRuleSet] = {}
         self._lock = threading.RLock()
         self._loaded = False
-        
-        # Ensure rules directory exists
-        self.rules_dir.mkdir(parents=True, exist_ok=True)
-        
+        self._compile_cache: Dict[str, Tuple[float, int, YaraRuleSet]] = {}
+
+        # Ensure the writable rules directory exists. Failure is not fatal:
+        # bundled rules may still be available.
+        try:
+            self.rules_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(
+                f"Could not create YARA rules directory {self.rules_dir}: {e}. "
+                f"Using bundled rules only."
+            )
+
         # Rule file patterns
         self.rule_extensions = {'.yar', '.yara'}
     
@@ -99,7 +116,17 @@ class YaraManager:
         with self._lock:
             if self._loaded and not force_reload:
                 return True
-            
+
+            if not YARA_AVAILABLE:
+                logger.error(
+                    "yara-python is not installed - YARA detection is disabled. "
+                    "Install it with: pip install yara-python"
+                )
+                return False
+
+            if force_reload:
+                self._compile_cache.clear()
+
             logger.info(f"Loading Yara rules from {self.rules_dir}")
             
             # Clear existing rules
@@ -138,60 +165,79 @@ class YaraManager:
             return len(errors) == 0
     
     def _find_rule_files(self) -> List[Path]:
-        """Find all Yara rule files in the rules directory."""
-        rule_files = []
-        
-        for root, _, files in os.walk(self.rules_dir):
-            for file in files:
-                if Path(file).suffix.lower() in self.rule_extensions:
-                    rule_files.append(Path(root) / file)
-        
+        """Find YARA rule files in the writable and bundled directories."""
+        rule_files: List[Path] = []
+        seen_names = set()
+
+        for directory in (self.rules_dir, self.bundled_rules_dir):
+            try:
+                if not directory or not Path(directory).is_dir():
+                    continue
+                for root, _, files in os.walk(directory):
+                    for name in sorted(files):
+                        if Path(name).suffix.lower() not in self.rule_extensions:
+                            continue
+                        if name in seen_names:
+                            continue
+                        seen_names.add(name)
+                        rule_files.append(Path(root) / name)
+            except OSError as e:
+                logger.warning(f"Could not enumerate YARA rules in {directory}: {e}")
+
         return sorted(rule_files)
-    
+
     def _compile_rule_file(self, filepath: Path) -> Optional[YaraRuleSet]:
-        """
-        Compile a single Yara rule file.
-        
-        Args:
-            filepath: Path to the Yara rule file
-        
-        Returns:
-            YaraRuleSet if successful, None otherwise
-        """
+        """Compile a single Yara rule file (cached by mtime/size)."""
         try:
-            # Read and parse rule count
+            stat = filepath.stat()
+        except OSError as e:
+            logger.error(f"Cannot stat Yara rule file {filepath}: {e}")
+            return None
+
+        cache_key = str(filepath)
+        cached = self._compile_cache.get(cache_key)
+        if cached and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
+            return cached[2]
+
+        content = ""
+        try:
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            
-            # Count rules
+
             rule_count = len(re.findall(r'^\s*rule\s+\w+\s*[{:]', content, re.MULTILINE))
-            
             if rule_count == 0:
                 logger.debug(f"No rules found in {filepath}")
                 return None
-            
-            # Compile the rules
-            compiled = yara.compile(source=content)
-            
-            # Determine category from path
-            relative_path = filepath.relative_to(self.rules_dir)
+
+            # filepath= enables relative includes and better error messages
+            compiled = yara.compile(filepath=str(filepath))
+
+            try:
+                relative_path = filepath.relative_to(self.rules_dir)
+            except ValueError:
+                relative_path = filepath.relative_to(self.bundled_rules_dir) \
+                    if filepath.is_relative_to(self.bundled_rules_dir) else Path(filepath.name)
+
             category = relative_path.parts[0] if len(relative_path.parts) > 1 else 'general'
-            
-            return YaraRuleSet(
+
+            ruleset = YaraRuleSet(
                 name=f"{category}_{filepath.stem}",
                 compiled_rules=compiled,
                 source_path=filepath,
                 rule_count=rule_count,
                 last_compiled=datetime.utcnow(),
             )
-        
+
+            self._compile_cache[cache_key] = (stat.st_mtime, stat.st_size, ruleset)
+            return ruleset
+
         except yara.SyntaxError as e:
             logger.error(f"Yara syntax error in {filepath}: {e}")
             return None
         except yara.Error as e:
             logger.error(f"Yara error in {filepath}: {e}")
             return None
-    
+
     def _create_default_rules(self) -> None:
         """Create default Yara rules if none exist."""
         default_rules = {
@@ -216,7 +262,9 @@ rule suspicious_api_calls {
         $api10 = "VirtualProtect" nocase
     
     condition:
-        any of ($api*)
+        // OpenProcess/VirtualProtect are used by almost every program; require
+        // three of the genuinely injection-specific APIs instead of any one.
+        3 of ($api1, $api2, $api3, $api4, $api5, $api6, $api7)
 }
 
 rule process_injection_indicators {
@@ -421,10 +469,10 @@ rule high_entropy_section {
     meta:
         description = "Detects high entropy sections (packed/encrypted)"
         author = "CyberGuardian"
-        severity = "medium"
+        severity = "low"
     
     condition:
-        uint16(0) == 0x5A4D
+        uint16(0) == 0x5A4D and math.entropy(0, filesize) > 7.2
 }
 ''',
             'webshell.yar': '''// Webshell detection
@@ -631,6 +679,8 @@ rule suspicious_child_process {
         Returns:
             List of YaraMatch objects
         """
+        if not YARA_AVAILABLE:
+            return []
         if not self._loaded:
             self.load_rules()
         
@@ -674,6 +724,8 @@ rule suspicious_child_process {
         Returns:
             List of YaraMatch objects
         """
+        if not YARA_AVAILABLE:
+            return []
         if not self._loaded:
             self.load_rules()
         
@@ -717,6 +769,8 @@ rule suspicious_child_process {
         Returns:
             List of YaraMatch objects
         """
+        if not YARA_AVAILABLE:
+            return []
         if not self._loaded:
             self.load_rules()
         
@@ -767,18 +821,101 @@ rule suspicious_child_process {
         }
     
     def update_rules_from_remote(self, url: Optional[str] = None) -> bool:
+        """Install YARA rules from a remote JSON manifest.
+
+        The manifest must be served over HTTPS and look like::
+
+            {"files": [{"name": "malware/foo.yar", "url": "https://.../foo.yar"}]}
+
+        Every downloaded rule is compiled before it is written, so a broken or
+        malicious rules file cannot leave the rule set in a non-working state.
+        Returns True only when at least one rule file was updated successfully.
         """
-        Update rules from a remote repository.
-        
-        Args:
-            url: URL to fetch rules from (uses config default if not provided)
-        
-        Returns:
-            True if update successful
-        """
-        # Placeholder for remote update functionality
-        # In production, implement git clone or HTTP download
-        logger.info("Remote rule update not yet implemented")
+        import json as _json
+        import shutil
+        import tempfile
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        if not YARA_AVAILABLE:
+            logger.error("Cannot update YARA rules: yara-python is not installed")
+            return False
+
+        base_url = url or get_config().config.rules_update_url
+        if not base_url:
+            logger.error("No rules update URL configured")
+            return False
+
+        manifest_url = urllib.parse.urljoin(base_url.rstrip('/') + '/', 'manifest.json')
+        if not manifest_url.lower().startswith('https://'):
+            logger.error(f"Refusing non-HTTPS rule update URL: {manifest_url}")
+            return False
+
+        max_file_bytes = 5 * 1024 * 1024
+        max_files = 50
+
+        try:
+            with urllib.request.urlopen(manifest_url, timeout=30) as response:
+                raw = response.read(max_file_bytes + 1)
+            if len(raw) > max_file_bytes:
+                logger.error("Rules manifest is too large")
+                return False
+            manifest = _json.loads(raw.decode('utf-8', errors='replace'))
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            logger.error(f"Could not download rules manifest {manifest_url}: {e}")
+            return False
+
+        files = manifest.get('files') if isinstance(manifest, dict) else None
+        if not isinstance(files, list) or not files:
+            logger.error(f"Rules manifest has no 'files' list: {manifest_url}")
+            return False
+
+        updated = 0
+        for entry in files[:max_files]:
+            try:
+                name = str(entry.get('name', '')).replace('\\', '/')
+                file_url = str(entry.get('url', ''))
+                if not name.endswith(('.yar', '.yara')) or '..' in name.split('/'):
+                    logger.warning(f"Skipping unsafe rules entry: {entry!r}")
+                    continue
+                if not file_url.lower().startswith('https://'):
+                    logger.warning(f"Skipping non-HTTPS rule file: {file_url}")
+                    continue
+
+                with urllib.request.urlopen(file_url, timeout=30) as response:
+                    content = response.read(max_file_bytes + 1)
+                if len(content) > max_file_bytes:
+                    logger.warning(f"Rule file too large, skipped: {file_url}")
+                    continue
+
+                # Validate before installing.
+                yara.compile(source=content.decode('utf-8', errors='replace'))
+
+                destination = self.rules_dir / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp_path = tempfile.mkstemp(
+                    prefix='.cg_rule_', suffix='.yar', dir=str(destination.parent)
+                )
+                try:
+                    with os.fdopen(fd, 'wb') as handle:
+                        handle.write(content)
+                    shutil.move(tmp_path, destination)
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                updated += 1
+                logger.info(f"Updated YARA rule: {destination}")
+
+            except Exception as e:
+                logger.warning(f"Failed to update rule {entry!r}: {e}")
+
+        if updated:
+            self.load_rules(force_reload=True)
+            logger.info(f"YARA rule update complete: {updated} file(s)")
+            return True
+
+        logger.error("YARA rule update failed: no rule file could be installed")
         return False
 
 

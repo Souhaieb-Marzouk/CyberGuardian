@@ -5,12 +5,13 @@ Generates HTML and PDF reports with cyber-themed styling.
 """
 
 import os
+import html
 import json
 import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import base64
 
 from scanners.base_scanner import ScanResult, Detection, RiskLevel
@@ -18,6 +19,34 @@ from utils.config import REPORTS_DIR, get_config
 from utils.logging_utils import get_logger
 
 logger = get_logger('reporting.generator')
+
+
+def esc(value) -> str:
+    """HTML-escape a value taken from scanned content.
+
+    File names, YARA metadata, command lines and process names are fully
+    attacker-controlled; interpolating them unescaped allowed stored XSS in
+    the generated report.
+    """
+    if value is None:
+        return ''
+    return html.escape(str(value), quote=True)
+
+
+def sanitize_detection(detection):
+    """Return a copy of *detection* with every user-controlled string escaped."""
+    return replace(
+        detection,
+        indicator=esc(detection.indicator),
+        description=esc(detection.description),
+        detection_reason=esc(detection.detection_reason),
+        remediation=[esc(item) for item in (detection.remediation or [])],
+        file_path=esc(detection.file_path) if detection.file_path else detection.file_path,
+        process_name=esc(detection.process_name) if detection.process_name else detection.process_name,
+        command_line=esc(detection.command_line) if detection.command_line else detection.command_line,
+        user=esc(detection.user) if detection.user else detection.user,
+        metadata={k: esc(v) for k, v in (detection.metadata or {}).items()},
+    )
 
 
 class ReportGenerator:
@@ -88,7 +117,7 @@ class ReportGenerator:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
+    <title>{esc(title)}</title>
     <style>
         {self._get_css()}
     </style>
@@ -378,7 +407,7 @@ class ReportGenerator:
         """Build report header."""
         return f'''
         <div class="header">
-            <h1>🛡️ {title}</h1>
+            <h1>ðŸ›¡ï¸ {esc(title)}</h1>
             <div class="subtitle">Comprehensive Security Analysis Report</div>
             <div class="timestamp">Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</div>
         </div>
@@ -470,7 +499,7 @@ class ReportGenerator:
         else:
             detections_html = f'''
             <div class="no-detections">
-                <h3>✓ No Threats Detected</h3>
+                <h3>âœ“ No Threats Detected</h3>
                 <p>All scanned items were clean.</p>
             </div>
             '''
@@ -478,10 +507,10 @@ class ReportGenerator:
         return f'''
         <div class="scan-section">
             <div class="scan-header">
-                <h2>🔍 {result.scan_type.title()} Analysis</h2>
+                <h2>ðŸ” {esc(result.scan_type).title()} Analysis</h2>
                 <div class="meta">
                     Duration: {result.scan_duration_seconds:.2f}s | 
-                    Items: {result.total_items} |
+                    Target: {esc(result.scan_target)} | Items: {result.total_items} |
                     Detections: {len(result.detections)}
                 </div>
             </div>
@@ -490,7 +519,8 @@ class ReportGenerator:
         '''
     
     def _build_detection_html(self, detection: Detection) -> str:
-        """Build HTML for a single detection."""
+        """Build HTML for a single detection (all fields are escaped)."""
+        detection = sanitize_detection(detection)
         risk_class = f"risk-{detection.risk_level.value}"
         
         details_html = ''
@@ -534,7 +564,7 @@ class ReportGenerator:
             remediation_items = '\n'.join(f'<li>{r}</li>' for r in detection.remediation)
             remediation_html = f'''
             <div class="remediation">
-                <h4>🔧 Remediation Steps</h4>
+                <h4>ðŸ”§ Remediation Steps</h4>
                 <ul>
                     {remediation_items}
                 </ul>
@@ -547,8 +577,8 @@ class ReportGenerator:
             evidence_json = json.dumps(detection.evidence, indent=2)
             evidence_html = f'''
             <div class="evidence">
-                <h4>📋 Evidence</h4>
-                <pre>{evidence_json}</pre>
+                <h4>ðŸ“‹ Evidence</h4>
+                <pre>{esc(evidence_json)}</pre>
             </div>
             '''
         

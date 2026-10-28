@@ -239,6 +239,10 @@ class ConfigManager:
             f'{self.ENV_PREFIX}VIRUSTOTAL_API_KEY': ('api', 'virustotal_api_key'),
             f'{self.ENV_PREFIX}ABUSEIPDB_API_KEY': ('api', 'abuseipdb_api_key'),
             f'{self.ENV_PREFIX}ALIENVAULT_API_KEY': ('api', 'alienvault_api_key'),
+            f'{self.ENV_PREFIX}DEEPSEEK_API_KEY': ('api', 'deepseek_api_key'),
+            f'{self.ENV_PREFIX}OPENAI_API_KEY': ('api', 'openai_api_key'),
+            f'{self.ENV_PREFIX}GEMINI_API_KEY': ('api', 'gemini_api_key'),
+            f'{self.ENV_PREFIX}PREFERRED_AI_PROVIDER': ('api', 'ai_preferred_provider'),
             f'{self.ENV_PREFIX}LOG_LEVEL': (None, 'log_level'),
         }
         

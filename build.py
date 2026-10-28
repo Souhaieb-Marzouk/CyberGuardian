@@ -117,6 +117,13 @@ def get_pyinstaller_args():
     assets_dir = Path("assets")
     if assets_dir.exists() and list(assets_dir.iterdir()):
         args.extend(['--add-data', f'{assets_dir};assets'])
+
+    # Bundle YARA rules.  Without this the onefile build ships no rules and
+    # regenerates the built-ins into the temporary _MEIPASS directory on every
+    # launch (and user rules are lost).
+    rules_dir = Path("yara_rules")
+    if rules_dir.is_dir() and any(rules_dir.glob("*.yar")):
+        args.extend(['--add-data', f'{rules_dir};yara_rules'])
     
     # Add icon if it exists - MUST be .ico format on Windows
     icon_path = Path(ICON_PATH)
@@ -279,7 +286,7 @@ def clean_build():
     for pycache in Path('.').rglob('__pycache__'):
         try:
             shutil.rmtree(pycache, ignore_errors=True)
-        except:
+        except Exception:
             pass
     
     # Remove egg-info directories
@@ -287,7 +294,7 @@ def clean_build():
         try:
             shutil.rmtree(egg_info, ignore_errors=True)
             print(f"  Removed: {egg_info}")
-        except:
+        except Exception:
             pass
     
     print("  ✓ Clean complete")
@@ -315,9 +322,9 @@ def build_executable():
                 try:
                     exe_file.unlink()
                     print(f"  Removed existing: {exe_file}")
-                except:
+                except Exception:
                     pass
-        except:
+        except Exception:
             pass
     
     # Get PyInstaller arguments
@@ -399,30 +406,10 @@ def create_package():
     (package_dir / 'quarantine').mkdir(exist_ok=True)
     print("  Created: data directories")
     
-    # Create default config
-    config_content = """{
-    "general": {
-        "show_popups": true,
-        "sound_alerts": false,
-        "auto_start_monitor": false
-    },
-    "scanning": {
-        "scan_process_memory": true,
-        "scan_process_behavior": true,
-        "scan_file_yara": true,
-        "scan_file_entropy": true
-    },
-    "api": {
-        "virustotal_api_key": "",
-        "abuseipdb_api_key": "",
-        "deepseek_api_key": "",
-        "openai_api_key": "",
-        "gemini_api_key": ""
-    }
-}"""
-    (package_dir / 'data' / 'config.json').write_text(config_content)
-    print("  Created: default config.json")
-    
+    # Configuration is created by utils.config.ConfigManager on first run
+    # (config/config.yaml).  The old data/config.json template used a schema
+    # that nothing read and contained empty API key fields.
+
     # Create quick start guide
     quickstart = f"""# {APP_NAME} v{VERSION} - Quick Start
 
@@ -448,7 +435,7 @@ Configure in Settings > AI Analysis:
 
 ## Support
 
-https://github.com/YOUR_USERNAME/cyberguardian
+https://github.com/Souhaieb-Marzouk/CyberGuardian
 
 ---
 Built: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}

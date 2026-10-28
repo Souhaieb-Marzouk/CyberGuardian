@@ -246,14 +246,21 @@ def run_cli_scan(args):
             print(f"[*] Exporting report to: {args.export}")
             generator = ReportGenerator()
             
-            if args.format == 'json':
-                filepath = generator.export_json(results)
+            try:
+                if args.format == 'json':
+                    filepath = generator.export_json(results)
+                elif args.format == 'pdf':
+                    filepath = generator.generate_pdf_report(results)
+                else:
+                    filepath = generator.generate_html_report(results)
+            except Exception as e:
+                print(f"    [!] Report export failed: {e}")
+                filepath = None
+
+            if filepath:
+                print(f"    Report saved to: {filepath}")
             elif args.format == 'pdf':
-                filepath = generator.generate_pdf_report(results)
-            else:
-                filepath = generator.generate_html_report(results)
-            
-            print(f"    Report saved to: {filepath}")
+                print("    PDF export requires the optional 'weasyprint' or 'pdfkit' package")
     
     else:
         print("[!] No scans specified. Use --scan-all or specific scan options.")
@@ -298,9 +305,15 @@ def main():
     # Handle special commands
     if args.update_rules:
         from scanners.yara_manager import get_yara_manager
-        print("[*] Updating Yara rules...")
+        print("[*] Updating Yara rules from the configured manifest...")
         yara_manager = get_yara_manager()
-        yara_manager.update_rules_from_remote()
+        if yara_manager.update_rules_from_remote():
+            stats = yara_manager.get_rule_stats()
+            print(f"[+] Rules updated: {stats.get('total_rules', 0)} rules loaded")
+        else:
+            print("[!] Rule update failed - see the log output above")
+            print("    The update endpoint must serve an HTTPS manifest.json:")
+            print('    {"files": [{"name": "malware/foo.yar", "url": "https://..."}]}')
         return
     
     if args.list_whitelist:

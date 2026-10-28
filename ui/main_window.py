@@ -6,6 +6,7 @@ Features AI-powered analysis with Deepseek, OpenAI, and Gemini support.
 """
 
 import os
+import re
 import sys
 import logging
 import threading
@@ -38,6 +39,55 @@ from PyQt5.QtGui import (
 )
 
 from scanners.base_scanner import ScanResult, Detection, RiskLevel, ScanStatus
+
+
+def _vt_result_to_dict(vt) -> Dict[str, Any]:
+    """Convert an IOCResult into the dictionary shape used by the AI prompt."""
+    return {
+        'iocs_checked': vt.iocs_checked,
+        'iocs_malicious': vt.iocs_malicious,
+        'iocs_clean': vt.iocs_clean,
+        'overall_risk_adjustment': vt.overall_risk_adjustment,
+        'highest_risk_level': vt.highest_risk_level,
+        'vt_summary': vt.vt_summary,
+        'all_iocs': vt.all_iocs,
+        'hash_results': [
+            {
+                'hash_value': r.hash_value[:16] + '...',
+                'is_malicious': r.is_malicious,
+                'detection_ratio': r.detection_ratio,
+                'threat_names': r.threat_names[:3],
+            }
+            for r in vt.hash_results if r.is_malicious
+        ],
+        'ip_results': [
+            {
+                'ip_address': r.ip_address,
+                'is_malicious': r.is_malicious,
+                'detection_ratio': r.detection_ratio,
+                'country': r.country,
+                'as_owner': r.as_owner,
+            }
+            for r in vt.ip_results if r.is_malicious
+        ],
+        'domain_results': [
+            {
+                'domain': r.domain,
+                'is_malicious': r.is_malicious,
+                'detection_ratio': r.detection_ratio,
+                'categories': r.categories,
+            }
+            for r in vt.domain_results if r.is_malicious
+        ],
+        'url_results': [
+            {
+                'url': r.url[:50] + '...' if len(r.url) > 50 else r.url,
+                'is_malicious': r.is_malicious,
+                'detection_ratio': r.detection_ratio,
+            }
+            for r in vt.url_results if r.is_malicious
+        ],
+    }
 from scanners.process_scanner import ProcessScanner
 from scanners.file_scanner import FileScanner
 from scanners.registry_scanner import RegistryScanner
@@ -95,7 +145,7 @@ def is_admin() -> bool:
     """Check if the application is running with administrator privileges."""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
-    except:
+    except Exception:
         return False
 
 
@@ -523,6 +573,20 @@ class AIAnalysisWorker(QThread):
                 self.error.emit("Analysis cancelled")
                 return
             
+            # Enrich with VirusTotal on this worker thread (bounded by the
+            # checker's rate limits, never on the GUI thread).
+            try:
+                if globals().get('VIRUSTOTAL_AVAILABLE') and is_virustotal_available():
+                    vt_result = get_virustotal_checker().check_iocs_from_detection(
+                        str(self.detection_data.get('indicator', '')),
+                        str(self.detection_data.get('detection_type', '')),
+                        self.detection_data.get('evidence') or {},
+                    )
+                    if vt_result is not None and vt_result.iocs_checked:
+                        self.detection_data['virustotal_result'] = _vt_result_to_dict(vt_result)
+            except Exception as e:
+                logger.warning(f"VirusTotal IOC check failed: {e}")
+
             result = analyzer.analyze_detection(self.detection_data, self.provider)
             
             # Check cancellation before emitting result
@@ -542,7 +606,7 @@ class AIAnalysisWorker(QThread):
             # Ensure we emit the error safely
             try:
                 self.error.emit(f"Analysis error: {str(e)}")
-            except:
+            except Exception:
                 pass  # If even error emission fails, just log it
     
     def cancel(self):
@@ -703,7 +767,8 @@ class DetectionDialog(QDialog):
             
             # Check if any identifier is whitelisted
             for identifier in identifiers_to_check:
-                if whitelist.is_whitelisted(identifier):
+                identifier_type = 'hash' if re.fullmatch(r'[0-9a-fA-F]{32,64}', identifier) else 'path'
+                if whitelist.is_whitelisted(identifier, identifier_type):
                     self._is_whitelisted = True
                     return
             
@@ -1212,7 +1277,7 @@ class DetectionDialog(QDialog):
                 self.ai_provider_combo.clear()
                 self.ai_provider_combo.addItem('Auto (First Available)')
                 for provider in configured_providers:
-                    self.ai_provider_combo.addItem(provider.value.title())
+                    self.ai_provider_combo.addItem(provider.value.title(), provider)
                 
                 provider_names = ', '.join([p.value.title() for p in configured_providers])
                 self.ai_progress_label.setText(
@@ -1246,15 +1311,9 @@ class DetectionDialog(QDialog):
             QMessageBox.warning(self, "Not Available", "AI analysis module not available.")
             return
         
-        # Get selected provider
-        provider_idx = self.ai_provider_combo.currentIndex()
-        provider = None
-        if provider_idx == 1:
-            provider = AIProvider.DEEPSEEK
-        elif provider_idx == 2:
-            provider = AIProvider.OPENAI
-        elif provider_idx == 3:
-            provider = AIProvider.GEMINI
+        # Get selected provider.  The combo stores the provider itself as
+        # item data, so the mapping cannot drift when the item list changes.
+        provider = self.ai_provider_combo.currentData()
         
         # Check if provider is configured
         if provider:
@@ -1282,80 +1341,11 @@ class DetectionDialog(QDialog):
             'user': self.detection.user or '',
         }
         
-        # Check IOCs against VirusTotal if API key is configured
+        # NOTE: VirusTotal enrichment runs in AIAnalysisWorker (background
+        # thread).  It used to run here, blocking the GUI for minutes, and it
+        # called a method that did not exist so the results were never used.
         vt_result = None
-        if VIRUSTOTAL_AVAILABLE and is_virustotal_available():
-            try:
-                self.ai_progress_label.setText("Checking IOCs against VirusTotal...")
-                self.ai_progress_label.setStyleSheet(f"color: {CYBER_COLORS['secondary']}; font-size: 12px; padding: 5px;")
-                
-                vt_checker = get_virustotal_checker()
-                vt_result = vt_checker.check_iocs_from_evidence(self.detection.evidence or {})
-                
-                # Add VirusTotal results to detection data
-                detection_data['virustotal_result'] = {
-                    'iocs_checked': vt_result.iocs_checked,
-                    'iocs_malicious': vt_result.iocs_malicious,
-                    'iocs_clean': vt_result.iocs_clean,
-                    'overall_risk_adjustment': vt_result.overall_risk_adjustment,
-                    'highest_risk_level': vt_result.highest_risk_level,
-                    'vt_summary': vt_result.vt_summary,
-                    'all_iocs': vt_result.all_iocs,
-                    # Include detailed results
-                    'hash_results': [
-                        {
-                            'hash_value': r.hash_value[:16] + '...',
-                            'is_malicious': r.is_malicious,
-                            'detection_ratio': r.detection_ratio,
-                            'threat_names': r.threat_names[:3]
-                        } for r in vt_result.hash_results if r.is_malicious
-                    ],
-                    'ip_results': [
-                        {
-                            'ip_address': r.ip_address,
-                            'is_malicious': r.is_malicious,
-                            'detection_ratio': r.detection_ratio,
-                            'country': r.country,
-                            'as_owner': r.as_owner
-                        } for r in vt_result.ip_results if r.is_malicious
-                    ],
-                    'domain_results': [
-                        {
-                            'domain': r.domain,
-                            'is_malicious': r.is_malicious,
-                            'detection_ratio': r.detection_ratio,
-                            'categories': r.categories
-                        } for r in vt_result.domain_results if r.is_malicious
-                    ],
-                    'url_results': [
-                        {
-                            'url': r.url[:50] + '...' if len(r.url) > 50 else r.url,
-                            'is_malicious': r.is_malicious,
-                            'detection_ratio': r.detection_ratio
-                        } for r in vt_result.url_results if r.is_malicious
-                    ]
-                }
-                
-                # Update risk level based on VirusTotal results
-                if vt_result.iocs_malicious > 0:
-                    original_risk = self.detection.risk_level
-                    # Adjust risk level
-                    if vt_result.highest_risk_level == 'critical':
-                        if original_risk != RiskLevel.CRITICAL:
-                            detection_data['risk_level'] = 'critical'
-                            detection_data['risk_adjusted_by_vt'] = True
-                    elif vt_result.highest_risk_level == 'high':
-                        if original_risk not in [RiskLevel.CRITICAL]:
-                            detection_data['risk_level'] = 'high'
-                            detection_data['risk_adjusted_by_vt'] = True
-                
-                logger.info(f"[VIRUSTOTAL] IOC check complete: {vt_result.iocs_checked} checked, {vt_result.iocs_malicious} malicious")
-                
-            except Exception as e:
-                logger.warning(f"VirusTotal IOC check failed: {e}")
-                # Continue without VT results
-                vt_result = None
-        
+
         # Start worker
         self.ai_analyze_btn.setEnabled(False)
         self.ai_analyze_btn.setText(" ANALYZING...")
@@ -1404,6 +1394,19 @@ class DetectionDialog(QDialog):
             
         try:
             self.ai_result = result
+
+            # A failed API call is returned as an AnalysisResult with `error`
+            # set; it used to be rendered as "UNKNOWN".
+            if getattr(result, 'error', None):
+                self.ai_progress_label.setText(f"Analysis failed: {result.error}")
+                self.ai_progress_label.setStyleSheet(
+                    f"color: {CYBER_COLORS['critical']}; font-size: 12px; padding: 5px;"
+                )
+                self.ai_result_text.setPlainText(f"Analysis failed:\n\n{result.error}")
+                self.ai_analyze_btn.setEnabled(True)
+                self.ai_analyze_btn.setText(" ANALYZE WITH AI")
+                return
+
             self.ai_analyze_btn.setEnabled(True)
             self.ai_analyze_btn.setText(" ANALYZE WITH AI")
             
@@ -1562,7 +1565,7 @@ class DetectionDialog(QDialog):
             # Disconnect old connections
             try:
                 self.whitelist_btn.clicked.disconnect()
-            except:
+            except Exception:
                 pass
             
             if is_whitelisted:
@@ -1633,7 +1636,7 @@ class DetectionDialog(QDialog):
             )
             
             if reply == QMessageBox.Yes:
-                webbrowser.open(f"file://{filepath}")
+                webbrowser.open(Path(str(filepath)).as_uri())
         except Exception as e:
             logger.error(f"Failed to export AI analysis: {e}")
             QMessageBox.critical(self, "Export Failed", f"Failed to export analysis: {str(e)}")
@@ -2524,7 +2527,13 @@ class AddWhitelistDialog(QDialog):
 
 class MainWindow(QMainWindow):
     """Main application window."""
-    
+
+    # Emitted from the real-time monitor's worker threads and delivered to the
+    # GUI thread through Qt's queued connection.  The previous implementation
+    # called QTimer.singleShot() from a plain Python thread, where the timer
+    # never fired (detections were dropped).
+    realtime_detection_received = pyqtSignal(object)
+
     def __init__(self):
         super().__init__()
         
@@ -2532,6 +2541,7 @@ class MainWindow(QMainWindow):
         
         self.config = get_config()
         self.report_generator = ReportGenerator()
+        self.realtime_detection_received.connect(self._handle_realtime_detection)
         
         # Initialize Yara rules
         self.yara_manager = get_yara_manager()
@@ -3186,6 +3196,7 @@ class MainWindow(QMainWindow):
         
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_activated)
+        self.tray_icon.show()
     
     def setup_statusbar(self):
         """Setup the status bar."""
@@ -3357,8 +3368,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to start monitoring: {str(e)}")
     
     def on_realtime_detection(self, detection: Detection):
-        """Handle real-time detection."""
-        QTimer.singleShot(0, lambda: self._handle_realtime_detection(detection))
+        """Forward a real-time detection to the GUI thread (thread-safe)."""
+        self.realtime_detection_received.emit(detection)
     
     def _handle_realtime_detection(self, detection: Detection):
         """Handle real-time detection in main thread."""
@@ -3710,7 +3721,7 @@ class MainWindow(QMainWindow):
             )
             
             if reply == QMessageBox.Yes:
-                whitelist.remove_entry(identifier)
+                whitelist.remove_entry(identifier, entry_type)
                 self.log(f"Removed from whitelist: {entry_type}={identifier[:50]}")
                 QMessageBox.information(self, "Success", "Entry removed from whitelist.")
                 self.refresh_whitelist()
@@ -3833,8 +3844,12 @@ For more information, see the USER_GUIDE.md file.
             return
         
         item = selected[0]
-        identifier = item.text(0)
-        entry_type = item.text(1).lower()
+        stored = item.data(0, Qt.UserRole)
+        if stored:
+            identifier, entry_type = stored
+        else:
+            identifier = item.text(0)
+            entry_type = item.text(1).lower()
         
         reply = QMessageBox.question(
             self, "Confirm Removal",
@@ -3861,6 +3876,9 @@ For more information, see the USER_GUIDE.md file.
                 entry.source,
                 entry.description[:50] if entry.description else ""
             ])
+            # Keep the untruncated identifier: removal used the displayed text,
+            # so entries longer than 60 characters could never be deleted.
+            item.setData(0, Qt.UserRole, (entry.identifier, entry.entry_type))
             self.whitelist_tree.addTopLevelItem(item)
     
     def export_whitelist(self):
@@ -3909,7 +3927,7 @@ For more information, see the USER_GUIDE.md file.
         )
         
         if reply == QMessageBox.Yes:
-            webbrowser.open(f"file://{filepath}")
+            webbrowser.open(Path(str(filepath)).as_uri())
     
     def export_detections(self):
         """Export detections to file."""
@@ -3956,13 +3974,42 @@ For more information, see the USER_GUIDE.md file.
                 f.write(self.log_text.toPlainText())
             self.log(f"Logs saved to {filepath}")
     
+    def closeEvent(self, event):
+        """Stop background work before the window (and its threads) is destroyed."""
+        try:
+            if self.realtime_monitor.is_running():
+                self.realtime_monitor.stop()
+        except Exception as e:
+            logger.warning(f"Failed to stop real-time monitor: {e}")
+
+        worker = getattr(self, 'current_worker', None)
+        if worker is not None and worker.isRunning():
+            try:
+                worker.cancel_scan()
+            except Exception:
+                pass
+            if not worker.wait(5000):
+                logger.warning("Scan worker did not stop within 5 seconds")
+
+        self.save_settings()
+        event.accept()
+
     def quit_application(self):
         """Quit the application."""
         self.save_settings()
-        
+
         if self.realtime_monitor.is_running():
             self.realtime_monitor.stop()
-        
+
+        # Never destroy a running QThread: that aborts the process.
+        worker = getattr(self, 'current_worker', None)
+        if worker is not None and worker.isRunning():
+            try:
+                worker.cancel_scan()
+            except Exception:
+                pass
+            worker.wait(5000)
+
         QApplication.quit()
 
 

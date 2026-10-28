@@ -25,6 +25,7 @@ from scanners.base_scanner import (
 from scanners.yara_manager import get_yara_manager, YaraMatch
 from utils.whitelist import get_whitelist
 from utils.config import get_config
+from utils.signature_check import verify_file
 from utils.logging_utils import get_logger, log_scan_start, log_scan_complete, log_detection
 from threat_intel.intel import get_threat_intel
 
@@ -37,6 +38,24 @@ except ImportError:
     logging.warning("Memory analyzer not available - deep analysis will be limited")
 
 logger = get_logger('scanners.process_scanner')
+
+# Locations Windows keeps its own, protected binaries in.
+USER_WRITABLE_MARKERS = (
+    '\\appdata\\',
+    '\\temp\\',
+    '\\tmp\\',
+    '\\downloads\\',
+    '\\desktop\\',
+    '\\users\\public\\',
+    '\\$recycle.bin\\',
+    '\\programdata\\',
+)
+
+
+def is_user_writable_path(path: str) -> bool:
+    """Return True when *path* lives in a location a normal user can write to."""
+    lowered = (path or '').lower()
+    return any(marker in lowered for marker in USER_WRITABLE_MARKERS)
 
 
 @dataclass
@@ -158,19 +177,59 @@ class ProcessScanner(BaseScanner):
         self.threat_intel = get_threat_intel()
         
         self._process_cache: Dict[int, ProcessInfo] = {}
+        self._proc_handles: Dict[int, Any] = {}
         self._resource_history: Dict[int, List[Tuple[float, float, float]]] = {}
         self._scanned_hashes: Set[str] = set()  # Track scanned hashes to avoid duplicates within same scan
+        self._yara_file_cache: Dict[Tuple[str, float, int], List[Any]] = {}
         self._memory_analyzer: Optional[MemoryAnalyzer] = None
         self._deep_analysis = False
         self._memory_analysis_count = 0  # Track how many processes had memory analysis
     
     def _reset_scan_state(self):
-        """Reset internal state before a new scan."""
+        """Reset internal state before a new scan.
+
+        ``_resource_history`` is intentionally *not* cleared: sustained CPU
+        usage detection needs samples from several scans.  It is pruned to the
+        last 30 minutes instead.
+        """
         self._process_cache.clear()
-        self._resource_history.clear()
+        self._proc_handles.clear()
+        self._yara_file_cache.clear()
         self._scanned_hashes.clear()
         self._deep_analysis = False
         self._memory_analysis_count = 0
+
+        cutoff = time.time() - 1800
+        for pid in list(self._resource_history.keys()):
+            samples = [s for s in self._resource_history[pid] if s[0] >= cutoff]
+            if samples:
+                self._resource_history[pid] = samples
+            else:
+                del self._resource_history[pid]
+
+    def _sample_cpu_usage(self, processes: List[ProcessInfo]) -> None:
+        """Take a second CPU sample so per-process usage is meaningful.
+
+        ``psutil`` reports 0.0 the first time ``cpu_percent`` is called for a
+        process.  The counters are primed during enumeration, a short pause is
+        taken, and the delta is then read back for every process.
+        """
+        if not processes or not self._proc_handles:
+            return
+
+        time.sleep(0.5)
+
+        for proc_info in processes:
+            handle = self._proc_handles.get(proc_info.pid)
+            if handle is None:
+                continue
+            try:
+                value = handle.cpu_percent(None)
+                if value is not None:
+                    proc_info.cpu_percent = float(value)
+            except (psutil.NoSuchProcess, psutil.AccessDenied,
+                    psutil.ZombieProcess, OSError):
+                continue
     
     @property
     def scanner_name(self) -> str:
@@ -222,25 +281,32 @@ class ProcessScanner(BaseScanner):
             # Get process list
             processes = self._enumerate_processes(target)
             result.total_items = len(processes)
+
+            if target is not None and not processes:
+                result.status = ScanStatus.FAILED
+                result.error_message = f"Process with PID {target} not found"
+                result.end_time = datetime.utcnow()
+                result.scan_duration_seconds = (
+                    result.end_time - result.start_time
+                ).total_seconds()
+                return result
+
+            self._sample_cpu_usage(processes)
             
             self.logger.info(f"Scanning {len(processes)} processes (deep_analysis={deep_analysis})")
             
             # Analyze each process
+            flagged_pids = set()
+
             for i, proc_info in enumerate(processes):
                 if self.is_cancelled():
                     result.status = ScanStatus.CANCELLED
                     break
-                
+
                 self._report_progress(i + 1, len(processes), f"Analyzing {proc_info.name}")
-                
-                # Skip whitelisted system processes early
-                if proc_info.is_whitelisted and self.whitelist.is_system_process(proc_info.name):
-                    result.clean_items += 1
-                    continue
-                
-                # Run detection checks
+
                 detections = self._analyze_process(proc_info)
-                
+
                 for detection in detections:
                     result.add_detection(detection)
                     self._report_detection(detection)
@@ -250,15 +316,17 @@ class ProcessScanner(BaseScanner):
                         risk_level=detection.risk_level.value,
                         description=detection.description
                     )
-                
-                if not detections:
-                    result.clean_items += 1
-                
+
+                if detections:
+                    flagged_pids.add(proc_info.pid)
+
                 # Deep analysis for high-priority or suspicious processes
                 if deep_analysis and self._memory_analyzer:
                     if self._should_analyze_memory(proc_info, detections):
                         self._memory_analysis_count += 1
-                        memory_detections = self._analyze_process_memory(proc_info, i, len(processes))
+                        memory_detections = self._analyze_process_memory(
+                            proc_info, i, len(processes)
+                        )
                         for detection in memory_detections:
                             result.add_detection(detection)
                             self._report_detection(detection)
@@ -268,7 +336,11 @@ class ProcessScanner(BaseScanner):
                                 risk_level=detection.risk_level.value,
                                 description=detection.description
                             )
-            
+                        if memory_detections:
+                            flagged_pids.add(proc_info.pid)
+
+            result.clean_items = max(0, result.total_items - len(flagged_pids))
+
             result.status = ScanStatus.COMPLETED
             
             # Log deep analysis summary
@@ -281,12 +353,15 @@ class ProcessScanner(BaseScanner):
             result.error_message = str(e)
         
         finally:
-            # Cleanup memory analyzer
+            # Cleanup memory analyzer and release the (possibly privileged)
+            # handle so a later deep scan starts from a clean state.
             if self._memory_analyzer:
                 try:
                     self._memory_analyzer.secure_cleanup()
-                except:
-                    pass
+                except Exception as e:
+                    self.logger.debug(f"Memory analyzer cleanup error: {e}")
+                finally:
+                    self._memory_analyzer = None
         
         result.end_time = datetime.utcnow()
         result.scan_duration_seconds = (result.end_time - result.start_time).total_seconds()
@@ -307,9 +382,11 @@ class ProcessScanner(BaseScanner):
             self.logger.debug(f"Memory analysis triggered for {proc_info.name}: high-priority process")
             return True
         
-        # Analyze unsigned executables
-        if not proc_info.is_signed and proc_info.path:
-            self.logger.debug(f"Memory analysis triggered for {proc_info.name}: unsigned executable")
+        # Analyze executables running from user-writable locations.  Every
+        # unsigned binary used to trigger a full memory scan, which made deep
+        # analysis extremely slow.
+        if proc_info.path and is_user_writable_path(proc_info.path):
+            self.logger.debug(f"Memory analysis triggered for {proc_info.name}: user-writable path")
             return True
         
         # Analyze processes with suspicious resource usage
@@ -345,7 +422,8 @@ class ProcessScanner(BaseScanner):
             def progress_callback(current, total, message):
                 if self.is_cancelled():
                     return
-                overall_progress = current_index + (current / total)
+                fraction = (current / total) if total else 0.0
+                overall_progress = int(current_index + fraction)
                 self._report_progress(
                     overall_progress, 
                     total_processes, 
@@ -476,45 +554,60 @@ class ProcessScanner(BaseScanner):
                     )
                     detections.append(detection)
             
-            # YARA memory scanning for high-risk processes
-            if detections or proc_info.name.lower() in self.MEMORY_ANALYSIS_PRIORITIES:
+            # YARA memory scanning for processes already flagged or on the
+            # high-risk priority list.  The previous implementation called a
+            # non-existent ``get_compiled_rules`` helper behind hasattr(), so
+            # this scan silently never ran.
+            if detections or (proc_info.name or '').lower() in self.MEMORY_ANALYSIS_PRIORITIES:
                 try:
-                    yara_matches = self._memory_analyzer.scan_memory_with_yara(
-                        proc_info.pid,
-                        self.yara_manager.get_compiled_rules() if hasattr(self.yara_manager, 'get_compiled_rules') else None,
-                        progress_callback=progress_callback
+                    yara_matches = self.yara_manager.scan_process_memory(
+                        proc_info.pid, timeout=30
                     )
-                    
+
                     for match in yara_matches:
-                        rule_name = match.get('rule', 'Unknown')
-                        detection = Detection(
+                        rule_name = getattr(match, 'rule', 'Unknown')
+                        severity = (getattr(match, 'severity', None) or 'high').lower()
+                        if severity == 'critical':
+                            risk_level = RiskLevel.CRITICAL
+                        elif severity == 'high':
+                            risk_level = RiskLevel.HIGH
+                        else:
+                            risk_level = RiskLevel.MEDIUM
+
+                        detections.append(Detection(
                             detection_id=self._generate_detection_id(),
                             detection_type='memory_yara_match',
                             indicator=f"{proc_info.name}:{rule_name}",
                             indicator_type='process',
-                            risk_level=RiskLevel.HIGH,
+                            risk_level=risk_level,
                             confidence=0.85,
-                            description=f"YARA rule matched in {proc_info.name} memory: {rule_name}",
-                            detection_reason=f"YARA rule '{rule_name}' matched at {match.get('memory_address', 'unknown')}",
+                            description=(
+                                f"YARA rule matched in {proc_info.name} memory: "
+                                f"{rule_name}"
+                            ),
+                            detection_reason=(
+                                f"YARA rule '{rule_name}' matched in process memory"
+                            ),
                             remediation=[
                                 f"Terminate process (PID: {proc_info.pid})",
                                 f"Analyze matched rule: {rule_name}",
-                                "Full memory dump recommended"
+                                "Full memory dump recommended",
                             ],
                             process_name=proc_info.name,
                             process_id=proc_info.pid,
+                            file_path=proc_info.path,
+                            command_line=proc_info.command_line,
                             evidence={
                                 'rule': rule_name,
-                                'memory_address': match.get('memory_address'),
-                                'matched_strings': match.get('strings', [])[:5],
-                                'meta': match.get('meta', {})
-                            }
-                        )
-                        detections.append(detection)
-                        
+                                'namespace': getattr(match, 'namespace', ''),
+                                'tags': list(getattr(match, 'tags', []) or []),
+                                'meta': dict(getattr(match, 'meta', {}) or {}),
+                                'match_count': len(getattr(match, 'strings', []) or []),
+                            },
+                        ))
                 except Exception as e:
                     self.logger.debug(f"YARA memory scan error for {proc_info.name}: {e}")
-        
+
         except Exception as e:
             self.logger.debug(f"Memory analysis error for {proc_info.name} (PID {proc_info.pid}): {e}")
         
@@ -536,6 +629,14 @@ class ProcessScanner(BaseScanner):
                                          'memory_percent', 'memory_info', 'status',
                                          'num_threads', 'num_handles']):
             try:
+                # Prime the CPU counter; the real value is read after a short
+                # sampling delay in _sample_cpu_usage().
+                try:
+                    proc.cpu_percent(None)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                    pass
+                self._proc_handles[proc.pid] = proc
+
                 info = proc.info
                 
                 # Skip if target specified and not matching
@@ -546,12 +647,15 @@ class ProcessScanner(BaseScanner):
                 parent_name = ""
                 try:
                     parent = psutil.Process(info['ppid'])
-                    parent_name = parent.name()
-                except:
+                    parent_name = parent.name() or ""
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
                     pass
                 
                 # Get path
                 path = info.get('exe') or ""
+                
+                # The name is None for some protected/system processes.
+                name = info.get('name') or f"<pid {info['pid']}>"
                 
                 # Get command line
                 cmdline = info.get('cmdline') or []
@@ -562,11 +666,11 @@ class ProcessScanner(BaseScanner):
                 mem_bytes = mem_info.rss if mem_info else 0
                 
                 # Check whitelist
-                is_whitelisted = self.whitelist.is_whitelisted(info['name'], 'name')
+                is_whitelisted = self.whitelist.is_whitelisted(name, 'name')
                 
                 proc_info = ProcessInfo(
                     pid=info['pid'],
-                    name=info.get('name', 'unknown'),
+                    name=name,
                     path=path,
                     command_line=cmdline_str,
                     username=info.get('username') or '',
@@ -594,16 +698,21 @@ class ProcessScanner(BaseScanner):
     def _analyze_process(self, proc_info: ProcessInfo) -> List[Detection]:
         """Run all detection checks on a process."""
         detections = []
-        
-        # Skip processes that are in the whitelist (user-added or system)
-        if proc_info.is_whitelisted:
-            self.logger.debug(f"Skipping whitelisted process: {proc_info.name}")
+
+        # A whitelisted *path* or hash is trustworthy.  A whitelisted *name*
+        # alone is not: malware routinely masquerades as lsass.exe/svchost.exe.
+        if proc_info.is_whitelisted and proc_info.path and \
+                self.whitelist.is_trusted_path(proc_info.path):
+            self.logger.debug(f"Skipping trusted system binary: {proc_info.path}")
             return detections
-        
-        # Skip system processes that are whitelisted
-        if self.whitelist.is_system_process(proc_info.name):
+
+        # Genuine core Windows binaries live in protected directories.  Names
+        # outside those directories are analysed (and flagged as masquerading
+        # by the signature check).
+        if self.whitelist.is_system_process(proc_info.name) and \
+                proc_info.path and self.whitelist.is_trusted_path(proc_info.path):
             return detections
-        
+
         detection_methods = [
             self._check_yara_rules,
             self._check_behavioral_heuristics,
@@ -628,12 +737,24 @@ class ProcessScanner(BaseScanner):
     def _check_yara_rules(self, proc_info: ProcessInfo) -> List[Detection]:
         """Check process executable against Yara rules."""
         detections = []
-        
+
         if not proc_info.path or not Path(proc_info.path).exists():
             return detections
-        
-        # Scan the executable file
-        yara_matches = self.yara_manager.scan_file(Path(proc_info.path))
+
+        # Scan the executable file once per scan: browsers and Electron apps
+        # run dozens of processes from a single binary.
+        try:
+            stat = Path(proc_info.path).stat()
+            cache_key = (proc_info.path.lower(), stat.st_mtime, stat.st_size)
+        except OSError:
+            cache_key = None
+
+        if cache_key is not None and cache_key in self._yara_file_cache:
+            yara_matches = self._yara_file_cache[cache_key]
+        else:
+            yara_matches = self.yara_manager.scan_file(Path(proc_info.path))
+            if cache_key is not None:
+                self._yara_file_cache[cache_key] = yara_matches
         
         if yara_matches:
             # Group by severity
@@ -795,6 +916,13 @@ class ProcessScanner(BaseScanner):
             # Check whitelist first
             if self.whitelist.is_whitelisted(sha256, 'hash'):
                 return detections
+
+            # The same binary commonly runs as many processes (browsers,
+            # Electron apps).  Hash lookups are rate-limited and slow, so only
+            # query each hash once per scan.
+            if sha256 in self._scanned_hashes:
+                return detections
+            self._scanned_hashes.add(sha256)
             
             # Lookup hash
             hash_result = self.threat_intel.lookup_hash(sha256, use_online=True)
@@ -837,98 +965,110 @@ class ProcessScanner(BaseScanner):
         return detections
     
     def _check_digital_signature(self, proc_info: ProcessInfo) -> List[Detection]:
-        """Check if process executable has valid digital signature."""
-        detections = []
-        
-        if not proc_info.path or not Path(proc_info.path).exists():
+        """Verify the Authenticode signature of the process image.
+
+        Uses WinVerifyTrust (with catalog fallback) directly instead of
+        shelling out to PowerShell.  The previous implementation interpolated
+        the executable path into a PowerShell command string, which allowed
+        command injection through a crafted file name.
+        """
+        detections: List[Detection] = []
+
+        if not proc_info.path:
             return detections
-        
-        # Skip system paths - they're trusted
-        if self.whitelist.is_whitelisted(proc_info.path, 'path'):
+        try:
+            if not os.path.isfile(proc_info.path):
+                return detections
+        except OSError:
             return detections
-        
-        # Try to verify signature on Windows
-        if sys.platform == 'win32':
-            try:
-                import win32security
-                import win32api
-                
-                # Get signature info
-                sig_verified = False
-                signer_name = ""
-                
-                try:
-                    # Use Windows trust verification
-                    wintrust = __import__('win32ctypes.pywin32.wintrust', fromlist=[''])
-                    # Simplified check - actual implementation would use WinVerifyTrust
-                    
-                    # For now, use a basic check
-                    import subprocess
-                    result = subprocess.run(
-                        ['powershell', '-Command', 
-                         f"(Get-AuthenticodeSignature '{proc_info.path}').Status"],
-                        capture_output=True, text=True, timeout=10
-                    )
-                    
-                    if result.returncode == 0:
-                        status = result.stdout.strip()
-                        sig_verified = (status == 'Valid')
-                        
-                        # Get signer name
-                        result2 = subprocess.run(
-                            ['powershell', '-Command',
-                             f"(Get-AuthenticodeSignature '{proc_info.path}').SignerCertificate.Subject"],
-                            capture_output=True, text=True, timeout=10
-                        )
-                        if result2.returncode == 0:
-                            # Parse CN= from subject
-                            subject = result2.stdout.strip()
-                            if 'CN=' in subject:
-                                signer_name = subject.split('CN=')[1].split(',')[0].strip()
-                
-                except Exception as e:
-                    self.logger.debug(f"Signature check error: {e}")
-                
-                proc_info.is_signed = sig_verified
-                proc_info.signer = signer_name
-                
-                # Flag unsigned processes from non-system locations
-                if not sig_verified:
-                    # Check if signer is trusted
-                    if signer_name and self.whitelist.is_trusted_signature(signer_name):
-                        return detections
-                    
-                    detection = Detection(
-                        detection_id=self._generate_detection_id(),
-                        detection_type='signature_unsigned',
-                        indicator=proc_info.name,
-                        indicator_type='process',
-                        risk_level=RiskLevel.LOW,
-                        confidence=0.5,
-                        description=f"Unsigned executable: {proc_info.path}",
-                        detection_reason="Process executable lacks valid digital signature",
-                        remediation=[
-                            "Verify software source and legitimacy",
-                            "Consider obtaining signed version of software",
-                            f"Scan file with anti-malware: {proc_info.path}"
-                        ],
-                        process_name=proc_info.name,
-                        process_id=proc_info.pid,
-                        file_path=proc_info.path,
-                        command_line=proc_info.command_line,
-                        user=proc_info.username,
-                        evidence={
-                            'signed': False,
-                            'signer': signer_name
-                        }
-                    )
-                    detections.append(detection)
-            
-            except ImportError:
-                self.logger.debug("win32security not available for signature check")
-        
+
+        info = verify_file(proc_info.path)
+        proc_info.is_signed = info.is_valid
+        proc_info.signer = info.signer
+
+        # Unknown (e.g. non-Windows) or validly signed: nothing to report.
+        if info.status == "Unavailable" or info.is_valid:
+            return detections
+
+        name = (proc_info.name or "").lower()
+        path_lower = proc_info.path.lower()
+        trusted_path = self.whitelist.is_trusted_path(path_lower)
+
+        # Masquerading: a core Windows process name running from anywhere
+        # other than a protected system directory, with no valid signature.
+        if name and self.whitelist.is_system_process(name) and not trusted_path:
+            detections.append(Detection(
+                detection_id=self._generate_detection_id(),
+                detection_type='process_masquerading',
+                indicator=proc_info.name,
+                indicator_type='process',
+                risk_level=RiskLevel.CRITICAL,
+                confidence=0.92,
+                description=(
+                    f"System process name '{proc_info.name}' is running from an "
+                    f"untrusted location: {proc_info.path}"
+                ),
+                detection_reason=(
+                    "The process name matches a core Windows process, but the "
+                    "executable is outside the protected system directories and "
+                    f"its signature is not valid ({info.status})."
+                ),
+                remediation=[
+                    "Terminate the process and quarantine the executable",
+                    "Verify with a second opinion scanner (e.g. VirusTotal)",
+                    "Check parent process and logon session for persistence",
+                    f"Inspect file: {proc_info.path}",
+                ],
+                process_name=proc_info.name,
+                process_id=proc_info.pid,
+                file_path=proc_info.path,
+                command_line=proc_info.command_line,
+                user=proc_info.username,
+                evidence={
+                    'signature_status': info.status,
+                    'signer': info.signer,
+                    'trusted_path': trusted_path,
+                },
+            ))
+            return detections
+
+        if self.whitelist.is_trusted_signature(info.signer):
+            return detections
+
+        risk = RiskLevel.MEDIUM if is_user_writable_path(path_lower) else RiskLevel.LOW
+
+        detections.append(Detection(
+            detection_id=self._generate_detection_id(),
+            detection_type='signature_unsigned',
+            indicator=proc_info.name,
+            indicator_type='process',
+            risk_level=risk,
+            confidence=0.6 if risk == RiskLevel.MEDIUM else 0.4,
+            description=f"Executable is not validly signed ({info.status}): {proc_info.path}",
+            detection_reason=(
+                "The executable has no valid Authenticode signature. Unsigned "
+                "binaries in user-writable locations are frequently malware or "
+                "unwanted software."
+            ),
+            remediation=[
+                "Verify the software source and legitimacy",
+                "Prefer a signed version from the vendor",
+                f"Scan the file with anti-malware: {proc_info.path}",
+            ],
+            process_name=proc_info.name,
+            process_id=proc_info.pid,
+            file_path=proc_info.path,
+            command_line=proc_info.command_line,
+            user=proc_info.username,
+            evidence={
+                'signature_status': info.status,
+                'signed': False,
+                'signer': info.signer,
+                'user_writable': is_user_writable_path(path_lower),
+            },
+        ))
         return detections
-    
+
     def _check_resource_usage(self, proc_info: ProcessInfo) -> List[Detection]:
         """Check for abnormal resource usage (crypto miner indicator)."""
         detections = []
@@ -943,10 +1083,10 @@ class ProcessScanner(BaseScanner):
             (current_time, proc_info.cpu_percent, proc_info.memory_percent)
         )
         
-        # Keep only last 60 seconds of data
+        # Keep the last 30 minutes of samples (scans may be minutes apart)
         self._resource_history[proc_info.pid] = [
             (t, c, m) for t, c, m in self._resource_history[proc_info.pid]
-            if current_time - t < 60
+            if current_time - t < 1800
         ]
         
         history = self._resource_history[proc_info.pid]

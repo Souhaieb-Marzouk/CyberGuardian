@@ -138,7 +138,7 @@ Inspects process command lines for suspicious patterns:
 The File Scanner performs comprehensive static analysis on files and folders:
 
 #### 1. YARA Static Scanning
-Matches file contents against YARA malware signatures. Supports custom rules in `data/yara_rules/` for extending detection capabilities.
+Matches file contents against YARA malware signatures. Supports custom rules in `yara_rules/` for extending detection capabilities.
 
 #### 2. Entropy Analysis
 Calculates Shannon entropy to detect packed or encrypted content:
@@ -374,7 +374,6 @@ CyberGuardian/
 ├── 📂 main.py                     # Application entry point
 ├── 📂 requirements.txt            # Python dependencies
 ├── 📂 build.py                    # PyInstaller build script
-├── 📂 setup_windows.bat           # Windows automated setup
 │
 ├── 📂 ui/
 │   ├── __init__.py
@@ -400,10 +399,6 @@ CyberGuardian/
 │   ├── intel.py                   # Threat intelligence aggregator
 │   └── virustotal_checker.py      # VirusTotal API integration
 │
-├── 📂 analysis/
-│   ├── __init__.py
-│   └── deep_analysis_coordinator.py  # Coordinates deep analysis modes
-│
 ├── 📂 reporting/
 │   ├── __init__.py
 │   └── generator.py               # HTML report generation
@@ -422,10 +417,8 @@ CyberGuardian/
 │   ├── icon.png                   # Application icon
 │   └── icon.ico                   # Windows executable icon
 │
-├── 📂 data/
-│   ├── yara_rules/                # Custom YARA rules directory
-│   ├── logs/                      # Application logs
-│   └── quarantine/                # Quarantined files
+├── 📂 yara_rules/                 # YARA rules (created at first run)
+├── 📂 data/                       # Runtime data (whitelist, quarantine)
 │
 ├── 📂 docs/
 │   └── screenshots/               # Documentation screenshots
@@ -466,14 +459,6 @@ python Scripts\pywin32_postinstall.py -install
 
 # Launch CyberGuardian
 python main.py
-```
-
-### Automated Setup (Windows)
-
-Run the provided setup script as Administrator:
-
-```cmd
-setup_windows.bat
 ```
 
 ### Build Standalone Executable
@@ -543,7 +528,7 @@ Configure API keys in **Settings → API Keys**:
 
 ### YARA Rules
 
-Add custom YARA rules to `data/yara_rules/`:
+Add custom YARA rules to `yara_rules/`:
 
 ```
 data/
@@ -606,7 +591,7 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 
 ### Can I add my own detection rules?
 
-**Yes!** Add YARA rules to `data/yara_rules/` and they'll be automatically loaded.
+**Yes!** Add YARA rules to `yara_rules/` and they'll be automatically loaded.
 
 ---
 

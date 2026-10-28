@@ -7,6 +7,7 @@ Properly integrates with AI analysis for accurate threat assessment.
 """
 
 import re
+import dataclasses
 import json
 import logging
 import time
@@ -33,6 +34,14 @@ from utils.logging_utils import get_logger
 from utils.secure_storage import get_secure_storage
 
 logger = get_logger('threat_intel.virustotal')
+
+
+def _fields_only(cls, data):
+    """Drop cache metadata keys that are not dataclass fields."""
+    if not isinstance(data, dict):
+        return {}
+    valid = {f.name for f in dataclasses.fields(cls)}
+    return {k: v for k, v in data.items() if k in valid}
 
 
 class VTAnalysisDepth(Enum):
@@ -235,7 +244,7 @@ class VirusTotalCache:
         try:
             cached_time = datetime.fromisoformat(entry['timestamp'])
             return datetime.utcnow() - cached_time > timedelta(hours=self.ttl_hours)
-        except:
+        except Exception:
             return True
     
     def get_hash(self, hash_value: str) -> Optional[Dict]:
@@ -372,24 +381,30 @@ class VirusTotalChecker:
         return session
     
     def _rate_limit(self) -> None:
-        """Apply rate limiting for API calls."""
+        """Apply rate limiting for API calls.
+
+        The sleep happens outside the lock so a waiting thread does not block
+        every other lookup.
+        """
+        wait_time = 0.0
         with self._rate_limit_lock:
             current_time = time.time()
             elapsed = current_time - self._last_request_time
-            
+
             if elapsed >= self.RATE_LIMIT_PERIOD:
                 self._request_count = 0
                 self._last_request_time = current_time
-            
+
             if self._request_count >= self.RATE_LIMIT_REQUESTS:
-                wait_time = self.RATE_LIMIT_PERIOD - elapsed
-                if wait_time > 0:
-                    logger.debug(f"Rate limiting: waiting {wait_time:.1f} seconds")
-                    time.sleep(wait_time)
+                wait_time = max(0.0, self.RATE_LIMIT_PERIOD - elapsed)
                 self._request_count = 0
-                self._last_request_time = time.time()
-            
+                self._last_request_time = current_time + wait_time
+
             self._request_count += 1
+
+        if wait_time > 0:
+            logger.debug(f"Rate limiting: waiting {wait_time:.1f} seconds")
+            time.sleep(wait_time)
     
     def _make_request(self, endpoint: str) -> Optional[Dict]:
         """Make an authenticated request to VirusTotal API."""
@@ -461,7 +476,7 @@ class VirusTotalChecker:
         cached = self.cache.get_hash(hash_value)
         if cached:
             logger.debug(f"[VT] Cache hit for hash: {hash_value[:16]}...")
-            return VTHashResult(**cached)
+            return VTHashResult(**_fields_only(VTHashResult, cached))
         
         if not self._api_key:
             return VTHashResult(
@@ -477,15 +492,13 @@ class VirusTotalChecker:
         data = self._make_request(f"files/{hash_value}")
         
         if not data:
-            result = VTHashResult(
-                hash_value=hash_value,
-                hash_type=hash_type,
-                is_malicious=False,
-                source='virustotal',
-                confidence='medium'
-            )
-        else:
-            result = self._parse_hash_response(hash_value, hash_type, data)
+            # Never fabricate a "clean" verdict for a failed request: a 401,
+            # 429 or timeout is unknown, and caching it turned transient
+            # errors into durable false negatives.
+            logger.warning(f"[VT] No data returned for hash {hash_value[:16]}...")
+            return None
+
+        result = self._parse_hash_response(hash_value, hash_type, data)
         
         # Cache the result
         result_dict = {
@@ -598,7 +611,7 @@ class VirusTotalChecker:
         cached = self.cache.get_ip(ip_address)
         if cached:
             logger.info(f"[VT] Cache hit for IP: {ip_address}, cached result: is_malicious={cached.get('is_malicious', False)}")
-            return VTIPResult(**cached)
+            return VTIPResult(**_fields_only(VTIPResult, cached))
         
         if not self._api_key:
             logger.warning(f"[VT] No API key configured - cannot check IP {ip_address}")
@@ -615,15 +628,10 @@ class VirusTotalChecker:
         
         if not data:
             logger.warning(f"[VT] No data returned for IP: {ip_address}")
-            result = VTIPResult(
-                ip_address=ip_address,
-                is_malicious=False,
-                source='virustotal',
-                confidence='medium'
-            )
-        else:
-            result = self._parse_ip_response(ip_address, data)
-            logger.info(f"[VT] IP {ip_address} result: is_malicious={result.is_malicious}, ratio={result.detection_ratio}, malicious_count={result.malicious_count}")
+            return None
+
+        result = self._parse_ip_response(ip_address, data)
+        logger.info(f"[VT] IP {ip_address} result: is_malicious={result.is_malicious}, ratio={result.detection_ratio}, malicious_count={result.malicious_count}")
         
         # Cache the result
         result_dict = {
@@ -710,7 +718,7 @@ class VirusTotalChecker:
         cached = self.cache.get_domain(domain)
         if cached:
             logger.debug(f"[VT] Cache hit for domain: {domain}")
-            return VTDomainResult(**cached)
+            return VTDomainResult(**_fields_only(VTDomainResult, cached))
         
         if not self._api_key:
             return VTDomainResult(
@@ -725,14 +733,10 @@ class VirusTotalChecker:
         data = self._make_request(f"domains/{domain}")
         
         if not data:
-            result = VTDomainResult(
-                domain=domain,
-                is_malicious=False,
-                source='virustotal',
-                confidence='medium'
-            )
-        else:
-            result = self._parse_domain_response(domain, data)
+            logger.warning(f"[VT] No data returned for domain: {domain}")
+            return None
+
+        result = self._parse_domain_response(domain, data)
         
         # Cache the result
         result_dict = {
@@ -787,7 +791,7 @@ class VirusTotalChecker:
         if attributes.get('creation_date'):
             try:
                 creation_date = datetime.fromtimestamp(attributes['creation_date']).isoformat()
-            except:
+            except Exception:
                 pass
         
         return VTDomainResult(
@@ -824,7 +828,7 @@ class VirusTotalChecker:
         cached = self.cache.get_url(url)
         if cached:
             logger.debug(f"[VT] Cache hit for URL")
-            return VTURLResult(**cached)
+            return VTURLResult(**_fields_only(VTURLResult, cached))
         
         if not self._api_key:
             return VTURLResult(
@@ -841,14 +845,10 @@ class VirusTotalChecker:
         data = self._make_request(f"urls/{url_id}")
         
         if not data:
-            result = VTURLResult(
-                url=url,
-                is_malicious=False,
-                source='virustotal',
-                confidence='medium'
-            )
-        else:
-            result = self._parse_url_response(url, data)
+            logger.warning(f"[VT] No data returned for URL lookup")
+            return None
+
+        result = self._parse_url_response(url, data)
         
         # Cache the result
         result_dict = {
@@ -960,7 +960,7 @@ class VirusTotalChecker:
         try:
             result = urlparse(value.strip())
             return all([result.scheme, result.netloc])
-        except:
+        except Exception:
             return False
     
     def _extract_iocs_from_evidence(self, evidence: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -1087,9 +1087,13 @@ class VirusTotalChecker:
         result.all_iocs = all_iocs
         
         # 3. Check hashes
-        for hash_value in all_iocs['hashes'][:10]:  # Limit to 10
+        for hash_value in all_iocs['hashes'][:5]:
             try:
                 hash_result = self.lookup_hash(hash_value)
+                if hash_result is None:
+                    # Request failed (auth/rate limit/timeout) - unknown, not clean
+                    result.iocs_unknown += 1
+                    continue
                 result.hash_results.append(hash_result)
                 result.iocs_checked += 1
                 if hash_result.is_malicious:
@@ -1102,9 +1106,13 @@ class VirusTotalChecker:
                 logger.error(f"Error checking hash {hash_value[:16]}...: {e}")
         
         # 4. Check IPs
-        for ip in all_iocs['ips'][:10]:  # Limit to 10
+        for ip in all_iocs['ips'][:5]:
             try:
                 ip_result = self.lookup_ip(ip)
+                if ip_result is None:
+                    # Request failed (auth/rate limit/timeout) - unknown, not clean
+                    result.iocs_unknown += 1
+                    continue
                 result.ip_results.append(ip_result)
                 result.iocs_checked += 1
                 if ip_result.is_malicious:
@@ -1117,9 +1125,13 @@ class VirusTotalChecker:
                 logger.error(f"Error checking IP {ip}: {e}")
         
         # 5. Check domains
-        for domain in all_iocs['domains'][:10]:  # Limit to 10
+        for domain in all_iocs['domains'][:5]:
             try:
                 domain_result = self.lookup_domain(domain)
+                if domain_result is None:
+                    # Request failed (auth/rate limit/timeout) - unknown, not clean
+                    result.iocs_unknown += 1
+                    continue
                 result.domain_results.append(domain_result)
                 result.iocs_checked += 1
                 if domain_result.is_malicious:
@@ -1132,9 +1144,13 @@ class VirusTotalChecker:
                 logger.error(f"Error checking domain {domain}: {e}")
         
         # 6. Check URLs
-        for url in all_iocs['urls'][:5]:  # Limit to 5 URLs
+        for url in all_iocs['urls'][:3]:
             try:
                 url_result = self.lookup_url(url)
+                if url_result is None:
+                    # Request failed (auth/rate limit/timeout) - unknown, not clean
+                    result.iocs_unknown += 1
+                    continue
                 result.url_results.append(url_result)
                 result.iocs_checked += 1
                 if url_result.is_malicious:
@@ -1155,6 +1171,28 @@ class VirusTotalChecker:
         
         return result
     
+    def check_iocs_from_evidence(
+        self, evidence: Dict[str, Any], detection_type: str = 'unknown'
+    ) -> IOCResult:
+        """Check every IOC found in an evidence dictionary.
+
+        Compatibility wrapper for the call made by the detection dialog.
+        """
+        indicator = ''
+        if isinstance(evidence, dict):
+            for key in (
+                'sha256', 'md5', 'indicator', 'ip', 'ip_address',
+                'remote_ip', 'domain', 'url',
+            ):
+                value = evidence.get(key)
+                if isinstance(value, str) and value.strip():
+                    indicator = value.strip()
+                    break
+
+        return self.check_iocs_from_detection(
+            indicator, detection_type, evidence or {}
+        )
+
     def _calculate_risk_adjustment(self, result: IOCResult) -> float:
         """Calculate overall risk adjustment based on VT results."""
         if result.iocs_checked == 0:

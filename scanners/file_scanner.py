@@ -184,6 +184,7 @@ class PEAnalyzer:
             'warnings': [],
         }
         
+        pe = None
         try:
             import pefile
             pe = pefile.PE(str(filepath))
@@ -253,13 +254,19 @@ class PEAnalyzer:
                 result['has_tls'] = True
                 result['warnings'].append("TLS callbacks present (anti-debug)")
             
-            pe.close()
-            
         except ImportError:
             result['warnings'].append("pefile not available for detailed analysis")
         except Exception as e:
             result['warnings'].append(f"PE analysis error: {str(e)}")
-        
+        finally:
+            # The mapped file stays locked on Windows unless it is closed,
+            # including on the error paths.
+            if pe is not None:
+                try:
+                    pe.close()
+                except Exception:
+                    pass
+
         return result
 
 
@@ -295,6 +302,7 @@ class OfficeAnalyzer:
             result['has_macros'] = True
             result['warnings'].append("Macro-enabled document")
         
+        ole = None
         try:
             import olefile
             
@@ -313,14 +321,19 @@ class OfficeAnalyzer:
                     if any(s in stream_name.lower() for s in ['macro', 'vba', 'code']):
                         result['suspicious_strings'].append(f"Stream: {stream_name}")
                 
-                ole.close()
-        
         except ImportError:
             result['warnings'].append("olefile not available for OLE analysis")
         except Exception as e:
             result['warnings'].append(f"OLE analysis error: {str(e)}")
+        finally:
+            if ole is not None:
+                try:
+                    ole.close()
+                except Exception:
+                    pass
         
         # Try oletools for deeper analysis
+        vba = None
         try:
             import oletools.olevba
             import oletools.msodde
@@ -355,12 +368,16 @@ class OfficeAnalyzer:
                                     f"Suspicious: {desc} in {vba_filename}"
                                 )
             
-            vba.close()
-            
         except ImportError:
             result['warnings'].append("oletools not available for macro analysis")
         except Exception as e:
             result['warnings'].append(f"Macro analysis error: {str(e)}")
+        finally:
+            if vba is not None:
+                try:
+                    vba.close()
+                except Exception:
+                    pass
         
         return result
 
@@ -379,40 +396,41 @@ class SteganographyDetector:
     
     IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp'}
     
-    # Known steganography tool signatures/magic bytes
+    # Known steganography tool signatures/magic bytes.
+    # NOTE: these are *byte* literals; a previous edit double-escaped them
+    # (b'\\xff\\xd9'), so none of them could ever match real file content.
     STEGO_SIGNATURES = {
         b'STEG': 'OpenStego',
         b'stego': 'Generic Stego Tool',
-        b'\\\\x89PNG\\\\r\\\\n\\\\x1a\\\\n': 'PNG with hidden data',
-        b'PK\\x03\\x04': 'ZIP archive appended (possible hidden content)',
+        b'\x89PNG\r\n\x1a\n': 'PNG with hidden data',
+        b'PK\x03\x04': 'ZIP archive appended (possible hidden content)',
         b'Rar!': 'RAR archive appended',
-        b'\\x1f\\x8b': 'GZIP data appended',
+        b'\x1f\x8b': 'GZIP data appended',
         b'BZh': 'BZIP2 data appended',
-        b'\\x50\\x4b\\x03\\x04': 'ZIP embedded in image',
     }
-    
+
     # EOF markers for different image formats
     EOF_MARKERS = {
-        '.jpg': [b'\\xff\\xd9'],  # JPEG EOI marker
-        '.jpeg': [b'\\xff\\xd9'],
-        '.png': [b'IEND\\xae\\x42\\x60\\x82'],  # PNG IEND chunk
-        '.gif': [b'\\x00\\x3b'],  # GIF trailer
+        '.jpg': [b'\xff\xd9'],  # JPEG EOI marker
+        '.jpeg': [b'\xff\xd9'],
+        '.png': [b'IEND\xae\x42\x60\x82'],  # PNG IEND chunk
+        '.gif': [b'\x00\x3b'],  # GIF trailer
         '.bmp': [],  # BMP has size in header
     }
-    
+
     # Suspicious strings to detect in extracted data
     MALICIOUS_PATTERNS = [
         # URLs and network indicators
         (rb'https?://[^\s<>"{}|\\^`\[\]]+', 'URL'),
         (rb'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', 'IP Address'),
         (rb'[a-zA-Z0-9-]+\.(com|net|org|io|tk|ml|ga|cf|onion)', 'Domain'),
-        
+
         # Executable indicators
-        (rb'MZ\\x90\\x00', 'PE Executable header'),
-        (rb'\\x7fELF', 'ELF Executable header'),
-        (rb'\\xca\\xfe\\xba\\xbe', 'Mach-O Executable'),
-        (rb'PK\\x03\\x04', 'ZIP/Archive (could contain malware)'),
-        
+        (rb'MZ\x90\x00', 'PE Executable header'),
+        (rb'\x7fELF', 'ELF Executable header'),
+        (rb'\xca\xfe\xba\xbe', 'Mach-O Executable'),
+        (rb'PK\x03\x04', 'ZIP/Archive (could contain malware)'),
+
         # Script indicators
         (rb'<script', 'JavaScript code'),
         (rb'#!/bin/', 'Shell script'),
@@ -420,7 +438,7 @@ class SteganographyDetector:
         (rb'powershell', 'PowerShell reference'),
         (rb'cmd\.exe', 'CMD reference'),
         (rb'wscript', 'Windows Script Host'),
-        
+
         # Malware-related strings
         (rb'mimikatz', 'Mimikatz reference'),
         (rb'meterpreter', 'Meterpreter reference'),
@@ -428,27 +446,25 @@ class SteganographyDetector:
         (rb'reverse\s*shell', 'Reverse shell'),
         (rb'backdoor', 'Backdoor reference'),
         (rb'keylog', 'Keylogger reference'),
-        (rb'password', 'Password reference'),
-        (rb'credential', 'Credential reference'),
-        
+
         # Base64 patterns (long strings that could be encoded data)
         (rb'[A-Za-z0-9+/=]{40,}', 'Possible Base64 encoded data'),
-        
+
         # Crypto addresses
         (rb'[13][a-km-zA-HJ-NP-Z1-9]{25,34}', 'Bitcoin address'),
         (rb'0x[a-fA-F0-9]{40}', 'Ethereum address'),
     ]
-    
+
     # Suspicious file signatures that might be hidden
     HIDDEN_FILE_SIGNATURES = {
         b'MZ': 'Windows Executable (.exe)',
         b'PK': 'ZIP Archive',
         b'Rar!': 'RAR Archive',
-        b'\\x7fELF': 'Linux Executable',
+        b'\x7fELF': 'Linux Executable',
         b'%PDF': 'PDF Document',
-        b'\\xd0\\xcf\\x11\\xe0': 'MS Office Document',
+        b'\xd0\xcf\x11\xe0': 'MS Office Document',
     }
-    
+
     @staticmethod
     def is_image_file(filepath: Path) -> bool:
         """Check if file is an image."""
@@ -495,46 +511,65 @@ class SteganographyDetector:
             
             file_size = len(image_data)
             
-            # Run all detection methods
+            # Statistical LSB analysis (weak on its own)
             lsb_result = cls._analyze_lsb(image_data)
-            if lsb_result['detected']:
-                result['has_steganography'] = True
-                result['detection_methods'].append('lsb_analysis')
-                result['lsb_analysis'] = lsb_result
-            
+            result['lsb_analysis'] = lsb_result
+
+            # Data appended after the end-of-image marker is definitive
             eof_result = cls._analyze_eof_appended(filepath, image_data)
-            if eof_result['detected']:
+            result['eof_analysis'] = eof_result
+
+            extracted: Dict[str, Any] = {}
+            if lsb_result.get('detected') or eof_result.get('detected'):
+                extracted = cls._extract_and_analyze(
+                    filepath, image_data, lsb_result, eof_result
+                )
+                result['extracted_data'] = extracted
+
+                if extracted.get('is_malicious'):
+                    result['threat_level'] = 'malicious'
+                    result['confidence'] = 0.9
+                elif extracted.get('is_suspicious') or eof_result.get('file_type'):
+                    result['threat_level'] = 'suspicious'
+                    result['confidence'] = 0.7
+                elif eof_result.get('detected'):
+                    # Appended high-entropy blob without a recognisable payload
+                    result['threat_level'] = 'suspicious'
+                    result['confidence'] = 0.55
+                else:
+                    # Statistics tripped but nothing was actually extracted.
+                    result['threat_level'] = 'clean'
+                    result['confidence'] = 0.2
+
+            payload_found = bool(
+                extracted.get('is_malicious')
+                or extracted.get('is_suspicious')
+                or extracted.get('content_type') not in ('unknown', 'binary', 'text', '')
+            )
+
+            if eof_result.get('detected'):
                 result['has_steganography'] = True
                 result['detection_methods'].append('eof_appended')
                 result['eof_analysis'] = eof_result
-            
+
+            # LSB statistics only count when a payload was actually extracted
+            if lsb_result.get('detected') and payload_found:
+                result['has_steganography'] = True
+                result['detection_methods'].append('lsb_analysis')
+
             # Entropy analysis
             entropy = EntropyCalculator.calculate(image_data[:min(len(image_data), 65536)])
             result['entropy_analysis'] = {
                 'overall': round(entropy, 2),
                 'high_entropy': entropy > 7.8
             }
-            
+
             if entropy > 7.8:
                 result['warnings'].append(f"High entropy ({entropy:.2f}) - possible encrypted/hidden data")
-            
-            # If steganography detected, try to extract and analyze hidden data
+
             if result['has_steganography']:
-                extracted = cls._extract_and_analyze(filepath, image_data, lsb_result, eof_result)
-                result['extracted_data'] = extracted
-                
-                # Determine threat level based on extracted content
-                if extracted.get('is_malicious'):
-                    result['threat_level'] = 'malicious'
-                    result['confidence'] = 0.9
-                elif extracted.get('is_suspicious'):
-                    result['threat_level'] = 'suspicious'
-                    result['confidence'] = 0.7
-                else:
-                    result['threat_level'] = 'suspicious'
-                    result['confidence'] = 0.5
-                
-                # Collect indicators
+                result['indicators'] = extracted.get('indicators', [])
+
                 result['indicators'] = extracted.get('indicators', [])
                 
         except Exception as e:
@@ -565,80 +600,75 @@ class SteganographyDetector:
         sample = data[:sample_size]
         
         # 1-bit LSB analysis (least significant bit)
-        lsb_bits = []
-        for byte in sample:
-            lsb_bits.append(byte & 0x01)
-        
+        lsb_bits = [byte & 0x01 for byte in sample]
+
         ones_count = sum(lsb_bits)
         zeros_count = len(lsb_bits) - ones_count
-        
-        # Chi-square test for randomness
         expected = len(lsb_bits) / 2
         chi_square = ((ones_count - expected) ** 2 + (zeros_count - expected) ** 2) / expected
-        
-        # Balanced LSB indicates possible hidden data
         ratio = ones_count / (zeros_count + 1)
         is_balanced = 0.45 < ratio < 1.55
-        
+
         result['plane_1'] = {
             'ones': ones_count,
             'zeros': zeros_count,
             'ratio': round(ratio, 3),
             'chi_square': round(chi_square, 3),
             'is_balanced': is_balanced,
-            'randomness': round(1 - min(chi_square / 100, 1), 3)  # Higher = more random
+            'randomness': round(1 - min(chi_square / 100, 1), 3)
         }
-        
-        if is_balanced and chi_square < 10:
-            result['patterns_found'].append('Balanced 1-bit LSB pattern')
-            result['confidence'] += 0.3
-        
+
+        # Natural photographs already have a near-uniform LSB plane, so these
+        # signals are weak and deliberately weighted low.  `detected` also
+        # requires a readable/extractable payload (see the final condition).
+        if is_balanced and chi_square < 2.0:
+            result['patterns_found'].append('Near-uniform 1-bit LSB plane')
+            result['confidence'] += 0.15
+
         # 2-bit LSB analysis (2 least significant bits)
-        lsb2_values = []
-        for byte in sample:
-            lsb2_values.append(byte & 0x03)
-        
-        # Check distribution of 2-bit values (should be uniform if hidden data)
+        lsb2_values = [byte & 0x03 for byte in sample]
         value_counts = [0] * 4
         for v in lsb2_values:
             value_counts[v] += 1
-        
+
         expected_2bit = len(lsb2_values) / 4
         chi_square_2bit = sum((c - expected_2bit) ** 2 for c in value_counts) / expected_2bit
-        
+
         result['plane_2'] = {
             'distribution': value_counts,
             'chi_square': round(chi_square_2bit, 3),
-            'is_uniform': chi_square_2bit < 20
+            'is_uniform': chi_square_2bit < 4.0
         }
-        
-        if chi_square_2bit < 20:
-            result['patterns_found'].append('Uniform 2-bit LSB pattern')
-            result['confidence'] += 0.2
-        
-        # Check for sequential patterns in LSB (could indicate structured data)
+
+        if chi_square_2bit < 4.0:
+            result['patterns_found'].append('Near-uniform 2-bit LSB plane')
+            result['confidence'] += 0.15
+
         sequential_runs = cls._count_sequential_runs(lsb_bits)
         result['plane_1']['sequential_runs'] = sequential_runs
-        
-        # High number of alternating bits suggests encoded data
-        if sequential_runs.get('alternating', 0) > len(lsb_bits) * 0.3:
+
+        if sequential_runs.get('alternating', 0) > len(lsb_bits) * 0.45:
             result['patterns_found'].append('High alternating bit pattern')
-            result['confidence'] += 0.2
-        
-        # Detect if there's readable content in LSB
+            result['confidence'] += 0.1
+
         lsb_extracted = cls._extract_lsb_bytes(sample, bits=1)
         readable_ratio = cls._check_readable_content(lsb_extracted)
-        
         result['plane_1']['readable_ratio'] = round(readable_ratio, 3)
-        
-        if readable_ratio > 0.1:  # More than 10% readable ASCII
+
+        if readable_ratio > 0.55:
             result['patterns_found'].append(f'Readable content in LSB ({readable_ratio:.1%})')
-            result['confidence'] += 0.3
-        
-        result['detected'] = result['confidence'] >= 0.4 or len(result['patterns_found']) >= 2
-        
+            result['confidence'] += 0.25
+
+        # A statistical anomaly alone is not evidence of steganography.
+        result['detected'] = (
+            result['confidence'] >= 0.5
+            and len(result['patterns_found']) >= 2
+            and readable_ratio > 0.45
+        )
+        result['confidence'] = round(min(result['confidence'], 0.85), 3)
+
         return result
-    
+
     @staticmethod
     def _count_sequential_runs(bits: List[int]) -> Dict[str, int]:
         """Count different types of sequential patterns in bit sequence."""
@@ -740,31 +770,43 @@ class SteganographyDetector:
                 last_eof_pos = pos + len(marker)
         
         if last_eof_pos > 0 and last_eof_pos < len(data):
-            # Data exists after EOF marker
+            # Data exists after the EOF marker
             appended = data[last_eof_pos:]
-            
-            if len(appended) > 4:  # Minimum threshold
-                result['detected'] = True
-                result['appended_size'] = len(appended)
-                
-                # Preview of appended data (hex and readable)
-                preview_len = min(len(appended), 256)
-                result['appended_data_preview'] = appended[:preview_len].hex()
-                
-                # Check for known file signatures in appended data
-                for sig, file_type in cls.HIDDEN_FILE_SIGNATURES.items():
-                    if appended.startswith(sig):
-                        result['file_type'] = file_type
-                        break
-                
-                # Check for embedded archives
-                for sig, name in [(b'PK\\x03\\x04', 'ZIP'), (b'Rar!', 'RAR'), (b'\\x1f\\x8b', 'GZIP')]:
-                    if sig in appended[:1024]:
-                        result['file_type'] = f'{name} archive'
-                        break
-        
+
+            # Require a meaningful amount of data; a few trailing bytes are
+            # produced by many encoders and are not evidence of anything.
+            if len(appended) < 64:
+                return result
+
+            # Pure padding (0x00/0xFF) is not hidden content.
+            if not appended.strip(b'\x00\xff'):
+                return result
+
+            result['appended_size'] = len(appended)
+            preview_len = min(len(appended), 256)
+            result['appended_data_preview'] = appended[:preview_len].hex()
+
+            # Check for known file signatures at the start of appended data
+            for sig, file_type in cls.HIDDEN_FILE_SIGNATURES.items():
+                if appended.lstrip(b'\x00').startswith(sig):
+                    result['file_type'] = file_type
+                    break
+
+            # Check for embedded archives anywhere in the first 1 KB
+            for sig, name in [(b'PK\x03\x04', 'ZIP'), (b'Rar!', 'RAR'), (b'\x1f\x8b', 'GZIP')]:
+                if sig in appended[:1024]:
+                    result['file_type'] = f'{name} archive'
+                    break
+
+            entropy = EntropyCalculator.calculate(appended[:65536])
+            result['entropy'] = round(entropy, 2)
+
+            # Definitive only when there is a recognisable payload or the
+            # appended blob is clearly encrypted/compressed data.
+            result['detected'] = bool(result['file_type']) or entropy > 7.2
+
         return result
-    
+
     @classmethod
     def _extract_and_analyze(cls, filepath: Path, image_data: bytes,
                              lsb_result: Dict, eof_result: Dict) -> Dict[str, Any]:
@@ -815,38 +857,42 @@ class SteganographyDetector:
         result['extracted_size'] = len(extracted_data)
         result['extracted_preview'] = extracted_data[:512].hex()
         
-        # Convert to string for pattern matching
-        try:
-            extracted_str = extracted_data.decode('latin-1')  # Safe decoding
-        except:
-            extracted_str = str(extracted_data)
-        
-        # Check for malicious patterns
+        extracted_bytes = bytes(extracted_data)
+
+        # Check for malicious patterns.  Only strong, specific indicators may
+        # raise the threat level: generic matches (Base64 blobs, IP-shaped
+        # noise, the words "password"/"credential") occur in ordinary image
+        # data and used to flag almost every picture.
         import re
         for pattern, indicator_name in cls.MALICIOUS_PATTERNS:
             try:
-                matches = re.findall(pattern, extracted_data + extracted_str.encode('latin-1', errors='ignore'))
-                if matches:
-                    result['indicators'].append({
-                        'type': indicator_name,
-                        'count': len(matches),
-                        'sample': str(matches[:3])[:100]  # First 3 matches, truncated
-                    })
-                    
-                    # Determine threat level
-                    if indicator_name in ['PE Executable header', 'ELF Executable header', 
-                                          'Mach-O Executable', 'Mimikatz reference',
-                                          'Meterpreter reference', 'Cobalt Strike']:
-                        result['is_malicious'] = True
-                    elif indicator_name in ['URL', 'IP Address', 'Possible Base64 encoded data',
-                                           'PowerShell reference', 'Reverse shell', 'Backdoor reference']:
-                        result['is_suspicious'] = True
+                matches = re.findall(pattern, extracted_bytes)
+                if not matches:
+                    continue
+
+                result['indicators'].append({
+                    'type': indicator_name,
+                    'count': len(matches),
+                    'sample': str(matches[:3])[:100]
+                })
+
+                if indicator_name in (
+                    'PE Executable header', 'ELF Executable header',
+                    'Mach-O Executable', 'Mimikatz reference',
+                    'Meterpreter reference', 'Cobalt Strike', 'Reverse shell',
+                ):
+                    result['is_malicious'] = True
+                elif indicator_name in (
+                    'URL', 'PowerShell reference', 'CMD reference',
+                    'JavaScript code', 'Windows Script Host', 'Backdoor reference',
+                ):
+                    result['is_suspicious'] = True
             except Exception:
                 continue
-        
-        # Check for file signatures
+
+        # Check for file signatures at the start of the extracted payload
         for sig, file_type in cls.HIDDEN_FILE_SIGNATURES.items():
-            if bytes(extracted_data).startswith(sig):
+            if extracted_bytes.startswith(sig):
                 result['indicators'].append({
                     'type': 'Embedded File',
                     'file_type': file_type,
@@ -855,7 +901,7 @@ class SteganographyDetector:
                 result['is_suspicious'] = True
                 result['content_type'] = file_type
                 break
-        
+
         # Determine overall content type
         if not result['indicators']:
             readable_ratio = cls._check_readable_content(bytes(extracted_data))
@@ -955,7 +1001,9 @@ class FileScanner(BaseScanner):
             result.total_items = len(files)
             
             self.logger.info(f"Scanning {len(files)} files (deep_analysis={deep_analysis})")
-            
+
+            flagged = set()
+
             # Scan each file
             for i, filepath in enumerate(files):
                 if self.is_cancelled():
@@ -972,12 +1020,11 @@ class FileScanner(BaseScanner):
                 
                 # Skip whitelisted
                 if file_info.is_whitelisted:
-                    result.clean_items += 1
                     continue
-                
+
                 # Run detections
                 detections = self._analyze_file(file_info)
-                
+
                 for detection in detections:
                     result.add_detection(detection)
                     self._report_detection(detection)
@@ -987,7 +1034,10 @@ class FileScanner(BaseScanner):
                         risk_level=detection.risk_level.value,
                         description=detection.description
                     )
-                
+
+                if detections:
+                    flagged.add(str(filepath))
+
                 # Deep analysis: Memory analysis for running executables
                 if deep_analysis and self._memory_analyzer and filepath.suffix.lower() in self.EXECUTABLE_EXTENSIONS:
                     memory_detections = self._analyze_running_file_memory(filepath, detections)
@@ -1000,10 +1050,11 @@ class FileScanner(BaseScanner):
                             risk_level=detection.risk_level.value,
                             description=detection.description
                         )
-                
-                if not detections:
-                    result.clean_items += 1
-            
+                    if memory_detections:
+                        flagged.add(str(filepath))
+
+            result.clean_items = max(0, result.total_items - len(flagged))
+
             result.status = ScanStatus.COMPLETED
             
         except Exception as e:
@@ -1012,12 +1063,14 @@ class FileScanner(BaseScanner):
             result.error_message = str(e)
         
         finally:
-            # Cleanup memory analyzer
+            # Cleanup memory analyzer and drop the privileged handle
             if self._memory_analyzer:
                 try:
                     self._memory_analyzer.secure_cleanup()
-                except:
-                    pass
+                except Exception as e:
+                    self.logger.debug(f"Memory analyzer cleanup error: {e}")
+                finally:
+                    self._memory_analyzer = None
         
         result.end_time = datetime.utcnow()
         result.scan_duration_seconds = (result.end_time - result.start_time).total_seconds()
@@ -1187,26 +1240,64 @@ class FileScanner(BaseScanner):
         
         return detections
     
+    @staticmethod
+    def _is_reparse_point(path: Path) -> bool:
+        """Return True for symlinks/junctions (which must not be traversed)."""
+        try:
+            st = path.lstat()
+            attrs = getattr(st, 'st_file_attributes', 0)
+            return bool(attrs & 0x0400) or path.is_symlink()
+        except OSError:
+            return True
+
+    @classmethod
+    def _is_regular_file(cls, path: Path) -> bool:
+        """True when *path* is a normal file within the size limit."""
+        try:
+            st = path.lstat()
+            if getattr(st, 'st_file_attributes', 0) & 0x0400:
+                return False
+            return st.st_size <= cls.MAX_FILE_SIZE
+        except OSError:
+            return False
+
     def _collect_files(self, target: Path) -> List[Path]:
-        """Collect all files to scan from target path."""
-        files = []
-        
+        """Collect all files to scan from target path.
+
+        Unreadable entries are skipped (a single locked file used to abort the
+        whole scan) and junctions/symlinks are not traversed, which previously
+        allowed infinite loops through NTFS reparse points.
+        """
+        files: List[Path] = []
+        max_files = 20000
+
+        def _on_error(exc):
+            self.logger.debug(f"Skipping unreadable path: {exc}")
+
         if target.is_file():
-            files.append(target)
+            if self._is_regular_file(target):
+                files.append(target)
+
         elif target.is_dir():
-            for root, _, filenames in os.walk(target):
+            for root, dirnames, filenames in os.walk(target, onerror=_on_error):
+                dirnames[:] = [
+                    d for d in dirnames
+                    if not self._is_reparse_point(Path(root) / d)
+                ]
+
                 for filename in filenames:
-                    try:
-                        filepath = Path(root) / filename
+                    filepath = Path(root) / filename
+                    if self._is_regular_file(filepath):
                         files.append(filepath)
-                    except Exception:
-                        continue
-        
-        # Filter by size
-        files = [f for f in files if f.exists() and f.stat().st_size <= self.MAX_FILE_SIZE]
-        
+
+                if len(files) >= max_files:
+                    self.logger.warning(
+                        f"File limit reached ({max_files}); remaining files were skipped"
+                    )
+                    break
+
         return files
-    
+
     def _get_file_info(self, filepath: Path) -> Optional[FileInfo]:
         """Get comprehensive file information."""
         try:
@@ -1220,9 +1311,9 @@ class FileScanner(BaseScanner):
             entropy = EntropyCalculator.calculate_file(filepath)
             
             # Check whitelist
-            is_whitelisted = (
-                self.whitelist.is_whitelisted(str(filepath), 'path') or
-                self.whitelist.is_whitelisted(sha256, 'hash') if sha256 else False
+            is_whitelisted = bool(
+                self.whitelist.is_whitelisted(str(filepath), 'path')
+                or (sha256 and self.whitelist.is_whitelisted(sha256, 'hash'))
             )
             
             return FileInfo(
@@ -1362,34 +1453,43 @@ class FileScanner(BaseScanner):
         return detections
     
     def _check_entropy(self, file_info: FileInfo) -> List[Detection]:
-        """Check for high entropy (packed/encrypted content)."""
+        """Check for high entropy (packed/encrypted content).
+
+        Entropy alone is weak evidence: compressed media, installers and
+        archives are high-entropy by design.  Only executables are flagged, and
+        only as an informational finding (the PE check reports actual packers).
+        """
         detections = []
-        
-        if file_info.entropy > self.HIGH_ENTROPY_THRESHOLD:
-            # Only flag non-image files for high entropy
-            if not file_info.is_image and not file_info.is_archive:
-                detection = Detection(
-                    detection_id=self._generate_detection_id(),
-                    detection_type='high_entropy',
-                    indicator=file_info.name,
-                    indicator_type='file',
-                    risk_level=RiskLevel.LOW,
-                    confidence=0.5,
-                    description=f"High entropy file ({file_info.entropy:.2f}) - possible packed/encrypted content",
-                    detection_reason="High Shannon entropy indicates packed or encrypted data",
-                    remediation=[
-                        "Analyze file with appropriate tools",
-                        "Check if file is legitimate encrypted archive",
-                        "Scan with anti-malware"
-                    ],
-                    file_path=str(file_info.path),
-                    evidence={
-                        'entropy': file_info.entropy,
-                        'threshold': self.HIGH_ENTROPY_THRESHOLD
-                    }
-                )
-                detections.append(detection)
-        
+
+        if file_info.entropy <= self.HIGH_ENTROPY_THRESHOLD:
+            return detections
+        if file_info.is_image or file_info.is_archive or file_info.is_office:
+            return detections
+        if file_info.extension not in self.EXECUTABLE_EXTENSIONS:
+            return detections
+
+        detection = Detection(
+            detection_id=self._generate_detection_id(),
+            detection_type='high_entropy',
+            indicator=file_info.name,
+            indicator_type='file',
+            risk_level=RiskLevel.INFO,
+            confidence=0.4,
+            description=f"High entropy executable ({file_info.entropy:.2f}) - likely packed/compressed",
+            detection_reason="High Shannon entropy in an executable indicates packing or encryption",
+            remediation=[
+                "Analyze file with appropriate tools",
+                "Check whether the binary is legitimately packed (e.g. UPX installer)",
+                "Scan with anti-malware"
+            ],
+            file_path=str(file_info.path),
+            evidence={
+                'entropy': file_info.entropy,
+                'threshold': self.HIGH_ENTROPY_THRESHOLD
+            }
+        )
+        detections.append(detection)
+
         return detections
     
     def _check_hash_reputation(self, file_info: FileInfo) -> List[Detection]:

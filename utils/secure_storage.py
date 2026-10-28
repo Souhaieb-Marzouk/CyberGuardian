@@ -42,8 +42,10 @@ class SecureStorage:
         self._cache: Dict[str, str] = {}
         self._use_dpapi = False
         
-        # For fallback encrypted storage
-        self._storage_dir = Path(__file__).parent.parent / "data" / "secure"
+        # For fallback encrypted storage.  Use the same user-writable data
+        # directory as the rest of the application (AppData when frozen).
+        from utils.config import DATA_DIR
+        self._storage_dir = Path(DATA_DIR) / "secure"
         self._storage_file = self._storage_dir / ".credentials"
         
         if not self._use_keyring:
@@ -298,7 +300,7 @@ class SecureStorage:
                 # Free memory
                 try:
                     ctypes.windll.kernel32.LocalFree(blob_out.pbData)
-                except:
+                except Exception:
                     pass
                 return json.loads(decrypted)
             else:
@@ -322,7 +324,7 @@ class SecureStorage:
                     json.dump(credentials, f)
                 try:
                     os.chmod(self._storage_file, 0o600)
-                except:
+                except Exception:
                     pass
                 
         except Exception as e:
@@ -356,7 +358,7 @@ class SecureStorage:
             # Free memory
             try:
                 ctypes.windll.kernel32.LocalFree(blob_out.pbData)
-            except:
+            except Exception:
                 pass
             
             # Write encrypted data
@@ -366,7 +368,7 @@ class SecureStorage:
             # Set file permissions (only owner can read/write)
             try:
                 os.chmod(self._storage_file, 0o600)
-            except:
+            except Exception:
                 pass
         else:
             raise RuntimeError("Failed to encrypt credentials file")

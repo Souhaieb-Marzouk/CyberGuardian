@@ -21,6 +21,7 @@ from scanners.base_scanner import (
 )
 from scanners.yara_manager import get_yara_manager
 from utils.whitelist import get_whitelist
+from utils.signature_check import verify_file
 from utils.config import get_config
 from utils.logging_utils import get_logger, log_scan_start, log_scan_complete, log_detection
 
@@ -50,64 +51,50 @@ class RegistryScanner(BaseScanner):
     - Entropy analysis of data
     """
     
-    # Common autorun and persistence locations
+    # Autorun and persistence locations.  Duplicate entries (Winlogon and
+    # Session Manager used to be listed twice) and the non-existent
+    # "Explorer\StartupFolder" registry key were removed; higher-value keys
+    # (RunOnceEx, Policies\Explorer\Run, Winlogon\Notify,
+    # ShellServiceObjectDelayLoad) were added.
     AUTORUN_LOCATIONS = [
-        # Standard Run keys
-        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", "HKLM", "User programs run at logon"),
+        # Standard Run / RunOnce keys
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", "HKLM", "Programs run at logon"),
         (r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce", "HKLM", "Programs run once at logon"),
         (r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run", "HKLM", "32-bit programs at logon"),
         (r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce", "HKLM", "32-bit programs run once"),
-        
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnceEx", "HKLM", "RunOnceEx entries"),
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run", "HKLM", "Policy-enforced autorun"),
+
         # User-specific run keys
         (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", "HKCU", "User-specific programs at logon"),
         (r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce", "HKCU", "User programs run once"),
-        
-        # Services
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run", "HKCU", "Policy-enforced autorun (user)"),
+
+        # Services and drivers
         (r"SYSTEM\CurrentControlSet\Services", "HKLM", "Windows services"),
-        
-        # Winlogon
-        (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon", "HKLM", "Logon configuration"),
-        
-        # Shell extensions
-        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved", "HKLM", "Shell extensions"),
-        
-        # Browser Helper Objects (BHO)
-        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Browser Helper Objects", "HKLM", "Browser extensions"),
-        
-        # Startup folder
-        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupFolder", "HKLM", "Startup folder items"),
-        
-        # Active Setup
-        (r"SOFTWARE\Microsoft\Active Setup\Installed Components", "HKLM", "Active setup components"),
-        
-        # LSA authentication packages
+
+        # Logon / authentication
+        (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon", "HKLM", "Winlogon configuration"),
+        (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Notify", "HKLM", "Winlogon notification packages"),
         (r"SYSTEM\CurrentControlSet\Control\Lsa", "HKLM", "Authentication packages"),
-        
-        # Security packages
         (r"SYSTEM\CurrentControlSet\Control\SecurityProviders", "HKLM", "Security providers"),
-        
-        # Network providers
         (r"SYSTEM\CurrentControlSet\Control\NetworkProvider\Order", "HKLM", "Network provider order"),
-        
-        # Session manager
         (r"SYSTEM\CurrentControlSet\Control\Session Manager", "HKLM", "Session manager settings"),
-        
-        # AppInit DLLs
+
+        # Shell integration
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\ShellServiceObjectDelayLoad", "HKLM", "Shell service objects"),
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved", "HKLM", "Shell extensions"),
+        (r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Browser Helper Objects", "HKLM", "Browser extensions"),
+        (r"SOFTWARE\Microsoft\Active Setup\Installed Components", "HKLM", "Active Setup components"),
+
+        # Injection points
         (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows", "HKLM", "AppInit DLLs"),
-        
-        # Image File Execution Options (IFEO) - debugger injection
         (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options", "HKLM", "IFEO debuggers"),
-        
-        # Boot execute
-        (r"SYSTEM\CurrentControlSet\Control\Session Manager", "HKLM", "Boot execute"),
-        
-        # Userinit
-        (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon", "HKLM", "Userinit path"),
-        
-        # Task scheduling
+
+        # Scheduled tasks
         (r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks", "HKLM", "Scheduled tasks"),
     ]
-    
+
     # Suspicious patterns in registry values
     SUSPICIOUS_PATTERNS = [
         # PowerShell execution
@@ -143,7 +130,7 @@ class RegistryScanner(BaseScanner):
         (r'forfiles.*/p.*/m.*/c', 'Forfiles execution', 'medium'),
         
         # Encoding/obfuscation
-        (r'[A-Za-z0-9+/=]{50,}', 'Possible base64 encoded data', 'medium'),
+        (r'^(?![0-9a-fA-F]+$)(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*\d)[A-Za-z0-9+/]{80,}={0,2}$', 'Possible base64 encoded data', 'medium'),
         
         # Network connections
         (r'https?://\d+\.\d+\.\d+\.\d+', 'Direct IP URL', 'medium'),
@@ -157,15 +144,15 @@ class RegistryScanner(BaseScanner):
     ]
     
     # Trusted registry entries (Microsoft)
+    # Registry values that are known-good.  Compared case-insensitively
+    # (the registry itself is case-insensitive) and limited to entries that are
+    # still shipped by current Windows versions.
     TRUSTED_ENTRIES = {
         ('HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', 'SecurityHealth'),
-        ('HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', 'AdobeAAMUpdater'),
-        ('HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', 'AdobeGCInvoker'),
-        ('HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run', 'SunJavaUpdateSched'),
     }
     
     # Entropy threshold for encoded data
-    HIGH_ENTROPY_THRESHOLD = 4.5
+    HIGH_ENTROPY_THRESHOLD = 5.5
     
     def __init__(self):
         super().__init__()
@@ -181,7 +168,7 @@ class RegistryScanner(BaseScanner):
     def scanner_type(self) -> str:
         return "registry"
     
-    def scan(self, target: Optional[str] = None) -> ScanResult:
+    def scan(self, target: Optional[str] = None, deep_analysis: bool = False) -> ScanResult:
         """
         Scan Windows registry.
         
@@ -212,7 +199,7 @@ class RegistryScanner(BaseScanner):
         
         try:
             # Scan all autorun locations
-            entries = self._scan_autorun_locations(target)
+            entries = self._scan_autorun_locations(target, deep_analysis=deep_analysis)
             result.total_items = len(entries)
             
             self.logger.info(f"Scanning {len(entries)} registry entries")
@@ -237,8 +224,9 @@ class RegistryScanner(BaseScanner):
                         description=detection.description
                     )
             
+            result.finalize_counts()
             result.status = ScanStatus.COMPLETED
-            
+
         except Exception as e:
             self.logger.error(f"Registry scan error: {e}")
             result.status = ScanStatus.FAILED
@@ -251,13 +239,19 @@ class RegistryScanner(BaseScanner):
         
         return result
     
-    def _scan_autorun_locations(self, target_key: Optional[str] = None) -> List[RegistryEntry]:
-        """Scan all autorun locations."""
+    def _scan_autorun_locations(
+        self, target_key: Optional[str] = None, deep_analysis: bool = False
+    ) -> List[RegistryEntry]:
+        """Scan all autorun locations.
+
+        ``deep_analysis`` additionally enumerates per-user hives under HKEY_USERS.
+        """
         entries = []
-        
+        max_entries = 20000
+
         try:
             import winreg
-            
+
             for key_path, hive_name, description in self.AUTORUN_LOCATIONS:
                 if self.is_cancelled():
                     break
@@ -274,12 +268,58 @@ class RegistryScanner(BaseScanner):
                     entries.extend(key_entries)
                 except Exception as e:
                     self.logger.debug(f"Error scanning {key_path}: {e}")
-        
+
+                if len(entries) >= max_entries:
+                    self.logger.warning(
+                        f"Registry entry limit reached ({max_entries}); remaining keys skipped"
+                    )
+                    break
+
+            if deep_analysis:
+                entries.extend(self._scan_user_hives(max_entries - len(entries)))
+
         except ImportError:
             self.logger.error("winreg module not available")
         
         return entries
     
+    def _scan_user_hives(self, limit: int = 5000) -> List[RegistryEntry]:
+        """Enumerate Run/RunOnce keys in every loaded user hive (deep mode)."""
+        entries: List[RegistryEntry] = []
+        try:
+            import winreg
+
+            users = self._get_hive('HKU')
+            if users is None:
+                return entries
+
+            index = 0
+            while len(entries) < limit:
+                try:
+                    sid = winreg.EnumKey(users, index)
+                    index += 1
+                except OSError:
+                    break
+
+                if sid.endswith('_Classes'):
+                    continue
+
+                for subkey in (
+                    r'SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+                    r'SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+                ):
+                    try:
+                        entries.extend(
+                            self._enumerate_key(users, f"{sid}\\{subkey}", 'HKU')
+                        )
+                    except Exception as e:
+                        self.logger.debug(f"Error scanning {sid}\\{subkey}: {e}")
+
+        except Exception as e:
+            self.logger.debug(f"User hive enumeration failed: {e}")
+
+        return entries
+
     def _get_hive(self, hive_name: str):
         """Get registry hive constant."""
         try:
@@ -299,14 +339,16 @@ class RegistryScanner(BaseScanner):
         self,
         hive,
         key_path: str,
-        hive_name: str
+        hive_name: str,
+        depth: int = 0
     ) -> List[RegistryEntry]:
         """Enumerate registry key and all its values."""
         entries = []
         
+        key = None
         try:
             import winreg
-            
+
             key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ)
             
             # Enumerate values
@@ -330,7 +372,7 @@ class RegistryScanner(BaseScanner):
                     if isinstance(value_data, bytes):
                         try:
                             value_data_str = value_data.decode('utf-8', errors='replace')
-                        except:
+                        except Exception:
                             value_data_str = value_data.hex()
                     elif isinstance(value_data, tuple):
                         value_data_str = '; '.join(str(v) for v in value_data)
@@ -350,20 +392,23 @@ class RegistryScanner(BaseScanner):
                 except OSError:
                     break
             
-            # Recursively enumerate subkeys if it's a services key
-            if 'Services' in key_path or 'Image File Execution' in key_path:
+            # Recurse into services / IFEO, but only a couple of levels: the
+            # old predicate matched at every depth and walked the entire
+            # Services tree (thousands of keys) on every scan.
+            if depth < 2 and (
+                'Services' in key_path or 'Image File Execution' in key_path
+            ):
                 i = 0
                 while True:
                     try:
                         subkey_name = winreg.EnumKey(key, i)
                         subkey_path = f"{key_path}\\{subkey_name}"
-                        subkey_entries = self._enumerate_key(hive, subkey_path, hive_name)
-                        entries.extend(subkey_entries)
+                        entries.extend(
+                            self._enumerate_key(hive, subkey_path, hive_name, depth + 1)
+                        )
                         i += 1
                     except OSError:
                         break
-            
-            winreg.CloseKey(key)
         
         except FileNotFoundError:
             pass
@@ -371,7 +416,13 @@ class RegistryScanner(BaseScanner):
             self.logger.debug(f"Permission denied for key: {key_path}")
         except Exception as e:
             self.logger.debug(f"Error enumerating {key_path}: {e}")
-        
+        finally:
+            if key is not None:
+                try:
+                    winreg.CloseKey(key)
+                except Exception:
+                    pass
+
         return entries
     
     def _analyze_entry(self, entry: RegistryEntry) -> List[Detection]:
@@ -471,7 +522,7 @@ class RegistryScanner(BaseScanner):
                     if isinstance(value_data, bytes):
                         try:
                             value_data_str = value_data.decode('utf-8', errors='replace')
-                        except:
+                        except Exception:
                             value_data_str = value_data.hex()
                     elif isinstance(value_data, tuple):
                         value_data_str = '; '.join(str(v) for v in value_data)
@@ -514,7 +565,10 @@ class RegistryScanner(BaseScanner):
     def _is_trusted_entry(self, entry: RegistryEntry) -> bool:
         """Check if entry is in trusted list or user whitelist."""
         key = (entry.key_path, entry.value_name)
-        if key in self.TRUSTED_ENTRIES:
+        trusted_lower = {
+            (path.lower(), name.lower()) for path, name in self.TRUSTED_ENTRIES
+        }
+        if (key[0].lower(), key[1].lower()) in trusted_lower:
             return True
         
         # Check user whitelist for this registry key path (using 'registry_key' type)
@@ -580,31 +634,71 @@ class RegistryScanner(BaseScanner):
         return detections
     
     def _check_suspicious_paths(self, entry: RegistryEntry) -> List[Detection]:
-        """Check for execution from suspicious paths."""
+        """Flag unsigned executables launched from user-writable locations.
+
+        The previous version matched path substrings against every value,
+        including REG_BINARY blobs and Microsoft's own Defender paths under
+        ProgramData, producing a false positive for every Defender service.
+        """
         detections = []
-        
+
+        if entry.value_type not in ('REG_SZ', 'REG_EXPAND_SZ'):
+            return detections
+
+        raw = (entry.value_data or '').strip()
+        if not raw:
+            return detections
+
+        # Values are commonly "@C:\path\file.dll,-123" or a quoted command line
+        candidate = raw.lstrip('@').strip().strip('"')
+        candidate = re.sub(r',-?\d+$', '', candidate)
+        candidate = candidate.split('"')[0]
+        candidate = re.split(r'\s+-\w|\s+/', candidate)[0].strip()
+
+        try:
+            candidate = os.path.expandvars(candidate)
+        except Exception:
+            pass
+
+        if not candidate:
+            return detections
+
+        candidate_path = Path(candidate)
+        try:
+            if not candidate_path.is_file():
+                # Cannot verify what does not exist; do not guess.
+                return detections
+            if verify_file(str(candidate_path)).is_valid:
+                return detections
+        except Exception as e:
+            self.logger.debug(f"Signature check for registry path failed: {e}")
+            return detections
+
+        lowered = candidate.lower()
+        if '\\windows\\' in lowered or '\\microsoft\\' in lowered:
+            return detections
+
         suspicious_paths = [
-            (r'\\Temp\\', 'Temporary folder execution'),
-            (r'\\AppData\\', 'AppData folder execution'),
-            (r'\\Public\\', 'Public folder execution'),
-            (r'\\Downloads\\', 'Downloads folder execution'),
-            (r'\\ProgramData\\', 'ProgramData folder execution'),
-            (r'^[A-Z]:\\Users\\[^\\]+\\', 'User directory execution'),
+            (r'\\temp\\', 'Temporary folder execution'),
+            (r'\\appdata\\', 'AppData folder execution'),
+            (r'\\public\\', 'Public folder execution'),
+            (r'\\downloads\\', 'Downloads folder execution'),
+            (r'^[a-z]:\\users\\[^\\]+\\', 'User directory execution'),
         ]
-        
-        data_lower = entry.value_data.lower()
-        
+
         for pattern, description in suspicious_paths:
-            if re.search(pattern, data_lower, re.IGNORECASE):
-                detection = Detection(
+            if re.search(pattern, lowered, re.IGNORECASE):
+                detections.append(Detection(
                     detection_id=self._generate_detection_id(),
                     detection_type='registry_suspicious_path',
                     indicator=entry.key_path,
                     indicator_type='registry_key',
                     risk_level=RiskLevel.MEDIUM,
                     confidence=0.6,
-                    description=f"{description} in registry autorun",
-                    detection_reason=f"Execution from: {description}",
+                    description=f"Unsigned binary launched from {description.lower()}",
+                    detection_reason=(
+                        f"{description}: {candidate} is not validly signed"
+                    ),
                     remediation=[
                         f"Review registry key: {entry.key_path}",
                         "Verify executable path is legitimate",
@@ -614,14 +708,14 @@ class RegistryScanner(BaseScanner):
                         'key_path': entry.key_path,
                         'value_name': entry.value_name,
                         'value_data': entry.value_data[:500],
-                        'suspicious_path': description
+                        'suspicious_path': description,
+                        'resolved_executable': candidate,
                     }
-                )
-                detections.append(detection)
+                ))
                 break
-        
+
         return detections
-    
+
     def _check_yara_rules(self, entry: RegistryEntry) -> List[Detection]:
         """Check registry data against Yara rules."""
         detections = []
@@ -659,14 +753,27 @@ class RegistryScanner(BaseScanner):
         return detections
     
     def _check_entropy(self, entry: RegistryEntry) -> List[Detection]:
-        """Check for high entropy (encoded data)."""
+        """Check for high entropy (encoded data).
+
+        Only string values are considered.  REG_BINARY blobs (service
+        configuration, driver data, GUIDs) are high-entropy by nature and
+        previously produced one LOW finding per service key.
+        """
         detections = []
-        
-        if len(entry.value_data) < 50:
+
+        if entry.value_type not in ('REG_SZ', 'REG_EXPAND_SZ'):
             return detections
-        
+
+        data = entry.value_data or ''
+        if len(data) < 80:
+            return detections
+
+        # Long Base64-looking blobs are already reported by the pattern check.
+        if re.fullmatch(r'[A-Za-z0-9+/=]{50,}', data.strip()):
+            return detections
+
         # Calculate entropy
-        entropy = self._calculate_entropy(entry.value_data)
+        entropy = self._calculate_entropy(data)
         
         if entropy > self.HIGH_ENTROPY_THRESHOLD:
             detection = Detection(

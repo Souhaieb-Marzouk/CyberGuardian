@@ -149,16 +149,21 @@ class RealTimeMonitor:
         monitor_types = monitor_types or ['process', 'file', 'registry', 'network']
         
         self._running = True
+        self._baselines_initialized = False
+        self._analyzed_pids.clear()
         logger.info(f"Starting real-time monitoring for: {monitor_types}")
-        
-        # Initialize baselines in a background thread to avoid UI freeze
+
+        # Initialize baselines in a background thread to avoid a UI freeze.
+        # The thread is tracked so stop() can wait for it (it used to be
+        # untracked, leaving state changes racing a later restart).
         baseline_thread = threading.Thread(
             target=self._initialize_baselines,
             name='BaselineInit',
             daemon=True
         )
+        self._threads.append(baseline_thread)
         baseline_thread.start()
-        
+
         # Give baseline thread a moment to start (non-blocking)
         time.sleep(0.1)
         
@@ -190,13 +195,26 @@ class RealTimeMonitor:
         for name, event in self._stop_events.items():
             event.set()
         
-        # Wait for threads to finish
+        # Wait for threads to finish.  Threads that are still alive are kept
+        # in the list so a subsequent start() cannot spawn a duplicate monitor
+        # for the same domain.
+        still_running = []
         for thread in self._threads:
             thread.join(timeout=5)
-        
-        self._threads.clear()
-        self._stop_events.clear()
-        
+            if thread.is_alive():
+                still_running.append(thread)
+
+        self._threads = still_running
+        if not still_running:
+            self._stop_events.clear()
+
+        try:
+            if self._memory_analyzer is not None:
+                self._memory_analyzer.secure_cleanup()
+                self._memory_analyzer = None
+        except Exception as e:
+            logger.debug(f"Memory analyzer cleanup failed: {e}")
+
         logger.info("Monitoring stopped")
     
     def is_running(self) -> bool:
@@ -529,7 +547,14 @@ class RealTimeMonitor:
         except ImportError:
             logger.warning("watchdog not available, using polling")
             self._file_poll_loop(stop_event)
-        
+        except Exception as e:
+            # A watchdog/schedule error used to kill the thread silently.
+            logger.error(f"Watchdog file monitor failed ({e}); falling back to polling")
+            try:
+                self._file_poll_loop(stop_event)
+            except Exception as poll_error:
+                logger.error(f"Polling file monitor failed: {poll_error}")
+
         logger.info("File monitor stopped")
     
     def _file_poll_loop(self, stop_event: threading.Event) -> None:
