@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
+
 jobs:
   test:
     runs-on: windows-latest

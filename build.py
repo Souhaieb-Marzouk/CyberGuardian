@@ -17,6 +17,14 @@ import subprocess
 import argparse
 from pathlib import Path
 
+# Build output uses check marks; Windows consoles (and CI runners) may default
+# to cp1252, which cannot encode them and aborts the build.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # Configuration
 APP_NAME = "CyberGuardian"
 VERSION = "1.3.0"
