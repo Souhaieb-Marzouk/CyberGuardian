@@ -3,6 +3,27 @@
 All notable changes to CyberGuardian are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-10-29
+
+### Added
+
+- **Tools panel** with five tabs: Startup impact, Software inventory, "Check a
+  file or link", Ransomware canaries and the Quarantine vault.
+- **Quarantine vault** (`core/quarantine.py`): DPAPI-encrypted containers,
+  SHA-256 integrity checks, restore that never overwrites, 30-day retention.
+- **Startup impact manager** (`core/startup.py`): Run/RunOnce keys, Startup
+  folders, auto-start services and scheduled tasks, with explainable impact and
+  reversible enable/disable through StartupApproved.
+- **Ransomware canaries** (`core/canary.py`): decoy documents in user folders,
+  change detection and one-click install/remove.
+- **Reputation checker** (`core/reputation.py`): file and URL verdicts with
+  evidence (signature, location, punycode, raw IP, risky TLDs, optional
+  VirusTotal).
+- **Software inventory** (`core/software.py`): installed applications compared
+  against a local advisory feed, with update links.
+- **PDF reports** (`reporting/pdf.py`): WeasyPrint with a ReportLab fallback,
+  including the AI response playbook.
+
 ## [1.3.0] - 2026-10-29
 
 ### Added

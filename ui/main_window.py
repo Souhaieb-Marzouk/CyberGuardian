@@ -2807,6 +2807,13 @@ class MainWindow(QMainWindow):
         self.health_btn.setToolTip("Plain-language health score and what changed on this PC")
         self.health_btn.clicked.connect(self.open_health_dialog)
         buttons_layout.addWidget(self.health_btn)
+
+        self.tools_btn = QPushButton("Tools")
+        self.tools_btn.setToolTip(
+            "Startup impact, installed software, file/link check, canaries and quarantine"
+        )
+        self.tools_btn.clicked.connect(self.open_tools_dialog)
+        buttons_layout.addWidget(self.tools_btn)
         
         self.realtime_btn = QPushButton("Real-Time Monitor")
         self.realtime_btn.setToolTip("Start real-time threat monitoring")
@@ -3285,6 +3292,13 @@ class MainWindow(QMainWindow):
         deep_analysis = self.deep_analysis_checkbox.isChecked() and self.is_admin
         self.start_scan(self.registry_scanner, "Registry Analysis", deep_analysis=deep_analysis)
     
+    def open_tools_dialog(self):
+        """Open the toolbox (startup, software, reputation, canaries, quarantine)."""
+        from ui.tools_dialog import ToolsDialog
+
+        dialog = ToolsDialog(self)
+        dialog.exec_()
+
     def start_eventlog_scan(self):
         """Run the Windows event log analysis in the background."""
         from scanners.eventlog_scanner import EventLogScanner
