@@ -58,6 +58,11 @@ class AnalysisResult:
     threat_type: str = "unknown"
     mitre_techniques: List[str] = field(default_factory=list)
     severity_justification: str = ""
+    # Guided response plan (see prompt section 6)
+    verification_steps: List[str] = field(default_factory=list)
+    containment_steps: List[str] = field(default_factory=list)
+    remediation_steps: List[str] = field(default_factory=list)
+    validation_steps: List[str] = field(default_factory=list)
     analysis_time: datetime = field(default_factory=datetime.utcnow)
     raw_response: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
@@ -75,6 +80,10 @@ class AnalysisResult:
             'threat_type': self.threat_type,
             'mitre_techniques': self.mitre_techniques,
             'severity_justification': self.severity_justification,
+            'verification_steps': self.verification_steps,
+            'containment_steps': self.containment_steps,
+            'remediation_steps': self.remediation_steps,
+            'validation_steps': self.validation_steps,
             'analysis_time': self.analysis_time.isoformat(),
             'error': self.error
         }
@@ -475,10 +484,23 @@ Perform a thorough analysis considering:
    - Likelihood of false positive
    - Urgency level for remediation
 
-6. REMEDIATION GUIDANCE
-   - Specific steps to neutralize the threat (address it to beginners)
-   - Containment recommendations (address it to beginners)
-   - Verification steps to confirm removal (address it to beginners)
+6. STEP-BY-STEP RESPONSE PLAN (the most important part for the user)
+   Produce four ordered lists that a non-expert can follow on Windows:
+   - verification_steps: how to CONFIRM the finding before acting (4-8 steps).
+     Say where to look (File Explorer path, Task Manager, Event Viewer, Windows
+     Security), what to compare (publisher, digital signature, hash, file
+     location) and what a benign result would look like. Never instruct the
+     user to run code copied from the detection.
+   - containment_steps: how to ISOLATE or stop the threat now, tailored to the
+     threat type (e.g. disconnect the network for ransomware, suspend the
+     process, disable the service/task). 3-6 concrete steps.
+   - remediation_steps: how to REMOVE it and restore the machine, including
+     quarantine/delete, service and scheduled-task cleanup, credential rotation
+     and Windows Security actions. 5-10 concrete steps.
+   - validation_steps: how to VERIFY the threat is gone (rescan, check logs,
+     confirm the service/task is gone, monitor for recurrence). 3-5 steps.
+   Use concrete Windows paths, commands and UI labels. If a step is risky,
+   state the risk and the safer alternative.
 
 Provide your analysis in the following JSON format:
 {{
@@ -491,7 +513,11 @@ Provide your analysis in the following JSON format:
     "risk_score": 0-100,
     "threat_type": "malware|apt|ransomware|trojan|backdoor|pua|false_positive|unknown",
     "mitre_techniques": ["Relevant MITRE ATT&CK technique IDs if applicable"],
-    "severity_justification": "Explanation for the assigned risk score and verdict, including VirusTotal contribution if applicable"
+    "severity_justification": "Explanation for the assigned risk score and verdict, including VirusTotal contribution if applicable",
+    "verification_steps": ["Ordered steps to confirm the finding before acting"],
+    "containment_steps": ["Ordered steps to isolate or stop the threat now"],
+    "remediation_steps": ["Ordered steps to remove it and restore the machine"],
+    "validation_steps": ["Ordered steps to verify the threat is gone"]
 }}
 
 Respond ONLY with valid JSON. Be thorough and specific in your analysis."""
@@ -584,6 +610,20 @@ Respond ONLY with valid JSON. Be thorough and specific in your analysis."""
                 if mitre_pattern.match(item.strip())
             ))[:20]
 
+            def plan_list(key: str) -> List[str]:
+                items = safe_list(data.get(key))
+                cleaned = []
+                for item in items:
+                    text = item.strip()
+                    if text:
+                        cleaned.append(text[:500])
+                return cleaned[:12]
+
+            verification_steps = plan_list('verification_steps')
+            containment_steps = plan_list('containment_steps')
+            remediation_steps = plan_list('remediation_steps')
+            validation_steps = plan_list('validation_steps')
+
             allowed_threat_types = {
                 'malware', 'apt', 'ransomware', 'trojan', 'backdoor', 'pua',
                 'downloader', 'dropper', 'stealer', 'unknown',
@@ -604,6 +644,10 @@ Respond ONLY with valid JSON. Be thorough and specific in your analysis."""
                 threat_type=threat_type,
                 mitre_techniques=mitre_techniques,
                 severity_justification=safe_str(data.get('severity_justification'), ''),
+                verification_steps=verification_steps,
+                containment_steps=containment_steps,
+                remediation_steps=remediation_steps,
+                validation_steps=validation_steps,
                 raw_response={'parsed': data, 'raw': response_text[:2000]}
             )
         except json.JSONDecodeError as e:

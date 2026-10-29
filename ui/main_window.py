@@ -99,6 +99,7 @@ from utils.config import get_config, APP_DIR
 from utils.logging_utils import get_logger, setup_logging
 from utils.whitelist import get_whitelist
 from utils.secure_storage import get_secure_storage, load_all_api_keys
+from core.health import HealthReport, TimelineStore, compute_health
 
 # Import AI analyzer
 try:
@@ -124,20 +125,20 @@ logger = get_logger('ui.main_window')
 
 # Cyber Theme Colors
 CYBER_COLORS = {
-    'background': '#0a0f0f',
-    'background_secondary': '#121a1a',
-    'background_card': '#1a2424',
-    'primary': '#00ff9d',
-    'secondary': '#00b8ff',
-    'accent': '#ff00ff',
-    'critical': '#ff0040',
-    'high': '#ff6b35',
-    'medium': '#ffd93d',
-    'low': '#6bcb77',
-    'info': '#4d96ff',
-    'text': '#e0e0e0',
-    'text_muted': '#8a8a8a',
-    'border': '#2a3a3a',
+    'background': '#070b14',
+    'background_secondary': '#0d1422',
+    'background_card': '#121b2c',
+    'primary': '#00e5a0',
+    'secondary': '#22d3ee',
+    'accent': '#8b5cf6',
+    'critical': '#ff4d6d',
+    'high': '#ff8a3d',
+    'medium': '#ffd166',
+    'low': '#5ee3a1',
+    'info': '#60a5fa',
+    'text': '#e6edf7',
+    'text_muted': '#8b9bb4',
+    'border': '#22304a',
 }
 
 
@@ -1508,6 +1509,24 @@ class DetectionDialog(QDialog):
 """
                 for i, rec in enumerate(result.recommendations, 1):
                     result_text += f"  {i}. {rec}\n\n"
+
+            # Guided response plan: verify -> contain -> remediate -> validate
+            for title, items in (
+                ("STEP 1 · VERIFY BEFORE YOU ACT", getattr(result, 'verification_steps', [])),
+                ("STEP 2 · CONTAIN / ISOLATE NOW", getattr(result, 'containment_steps', [])),
+                ("STEP 3 · REMOVE AND RESTORE", getattr(result, 'remediation_steps', [])),
+                ("STEP 4 · CONFIRM IT IS GONE", getattr(result, 'validation_steps', [])),
+            ):
+                if not items:
+                    continue
+                result_text += f"""
+{'═'*60}
+   {title}
+{'═'*60}
+
+"""
+                for i, step in enumerate(items, 1):
+                    result_text += f"  {i}. {step}\n\n"
             
             # Add severity justification
             if severity_justification:
@@ -2776,6 +2795,18 @@ class MainWindow(QMainWindow):
         self.network_btn.setToolTip("Analyze network connections")
         self.network_btn.clicked.connect(self.start_network_scan)
         buttons_layout.addWidget(self.network_btn)
+
+        self.eventlog_btn = QPushButton("Activity Logs")
+        self.eventlog_btn.setToolTip(
+            "Review Windows event logs for logon attacks, service/task persistence and tampering"
+        )
+        self.eventlog_btn.clicked.connect(self.start_eventlog_scan)
+        buttons_layout.addWidget(self.eventlog_btn)
+
+        self.health_btn = QPushButton("PC Health")
+        self.health_btn.setToolTip("Plain-language health score and what changed on this PC")
+        self.health_btn.clicked.connect(self.open_health_dialog)
+        buttons_layout.addWidget(self.health_btn)
         
         self.realtime_btn = QPushButton("Real-Time Monitor")
         self.realtime_btn.setToolTip("Start real-time threat monitoring")
@@ -3254,6 +3285,27 @@ class MainWindow(QMainWindow):
         deep_analysis = self.deep_analysis_checkbox.isChecked() and self.is_admin
         self.start_scan(self.registry_scanner, "Registry Analysis", deep_analysis=deep_analysis)
     
+    def start_eventlog_scan(self):
+        """Run the Windows event log analysis in the background."""
+        from scanners.eventlog_scanner import EventLogScanner
+
+        self.start_scan(
+            EventLogScanner(),
+            "Event Log Analysis",
+            deep_analysis=False,
+        )
+
+    def open_health_dialog(self):
+        """Show the plain-language health score and recent system changes."""
+        report = compute_health(self.scan_results)
+        try:
+            changes = TimelineStore().diff()
+        except Exception as exc:
+            logger.debug(f"Timeline diff failed: {exc}")
+            changes = []
+        dialog = HealthDialog(report, changes, self)
+        dialog.exec_()
+
     def start_network_scan(self):
         """Start network scan with deep analysis support."""
         deep_analysis = self.deep_analysis_checkbox.isChecked() and self.is_admin
@@ -4011,6 +4063,95 @@ For more information, see the USER_GUIDE.md file.
             worker.wait(5000)
 
         QApplication.quit()
+
+
+class HealthDialog(QDialog):
+    """Plain-language PC health summary plus a list of recent changes."""
+
+    def __init__(self, report: HealthReport, changes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("PC Health")
+        self.setMinimumSize(640, 560)
+        self.report = report
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        score = QLabel(str(report.score))
+        score.setAlignment(Qt.AlignCenter)
+        score.setStyleSheet(
+            f"font-size: 64px; font-weight: 900; color: {report.color};"
+        )
+
+        status = QLabel(report.headline)
+        status.setAlignment(Qt.AlignCenter)
+        status.setStyleSheet(
+            f"font-size: 18px; font-weight: bold; color: {report.color};"
+        )
+
+        detail = QLabel(report.detail)
+        detail.setWordWrap(True)
+        detail.setAlignment(Qt.AlignCenter)
+        detail.setStyleSheet(f"color: {CYBER_COLORS['text_muted']}; font-size: 13px;")
+
+        layout.addWidget(score)
+        layout.addWidget(status)
+        layout.addWidget(detail)
+
+        counts = QLabel(
+            "  ".join(
+                f"{name.title()}: {report.counts.get(name, 0)}"
+                for name in ("critical", "high", "medium", "low")
+            )
+        )
+        counts.setAlignment(Qt.AlignCenter)
+        counts.setStyleSheet(f"color: {CYBER_COLORS['text']}; font-size: 12px;")
+        layout.addWidget(counts)
+
+        if report.recommendations:
+            advice = QLabel("\n".join(f"• {item}" for item in report.recommendations))
+            advice.setWordWrap(True)
+            advice.setStyleSheet(
+                f"background: {CYBER_COLORS['background_card']}; "
+                f"border: 1px solid {CYBER_COLORS['border']}; border-radius: 8px; "
+                f"padding: 12px; color: {CYBER_COLORS['text']}; font-size: 13px;"
+            )
+            layout.addWidget(advice)
+
+        heading = QLabel("What changed on this PC")
+        heading.setStyleSheet(
+            f"color: {CYBER_COLORS['secondary']}; font-size: 14px; "
+            f"font-weight: bold; margin-top: 8px;"
+        )
+        layout.addWidget(heading)
+
+        if changes:
+            lines = []
+            for change in changes[:40]:
+                icon = "+" if change.action == "added" else "-"
+                color = CYBER_COLORS["medium"] if change.action == "added" else CYBER_COLORS["text_muted"]
+                lines.append(f"{icon} [{change.kind}] {change.name}")
+            body = QTextEdit()
+            body.setReadOnly(True)
+            body.setPlainText("\n".join(lines))
+            body.setStyleSheet(
+                f"background: {CYBER_COLORS['background_secondary']}; "
+                f"border: 1px solid {CYBER_COLORS['border']}; "
+                f"border-radius: 8px; color: {CYBER_COLORS['text']}; padding: 8px;"
+            )
+            layout.addWidget(body, 1)
+        else:
+            empty = QLabel(
+                "No changes since the last check. Run a scan regularly to build history."
+            )
+            empty.setWordWrap(True)
+            empty.setStyleSheet(f"color: {CYBER_COLORS['text_muted']}; font-size: 12px;")
+            layout.addWidget(empty, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
 
 def run_application():

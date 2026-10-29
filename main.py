@@ -87,6 +87,12 @@ Examples:
         action='store_true',
         help='Scan network connections'
     )
+
+    scan_group.add_argument(
+        '--eventlog', '-l',
+        action='store_true',
+        help='Analyse Windows event logs (System, Application, Security)'
+    )
     
     # Real-time monitoring
     parser.add_argument(
@@ -205,7 +211,26 @@ def run_cli_scan(args):
         result = scanner.scan()
         results.append(result)
         print(f"    Completed: {result.total_items} connections, {len(result.detections)} detections")
-    
+
+    # Event log scan
+    if args.scan_all or args.eventlog:
+        from scanners.eventlog_scanner import EventLogScanner
+        print("[*] Starting event log analysis...")
+        scanner = EventLogScanner()
+        result = scanner.scan()
+        results.append(result)
+        channels = result.stats.get('channels_read', 0)
+        print(
+            f"    Completed: {result.total_items} events from {channels} channels, "
+            f"{len(result.detections)} detections"
+        )
+        if result.stats.get('inaccessible_channels'):
+            print(
+                "    [!] Access denied: "
+                + ", ".join(result.stats['inaccessible_channels'])
+                + " (run as Administrator)"
+            )
+
     # Print summary
     if results:
         print("\n" + "-" * 60)

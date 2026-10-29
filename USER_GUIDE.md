@@ -175,7 +175,7 @@ python main.py --cli --file "C:\Users\Downloads"
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  🛡️ CYBERGUARDIAN                              v1.2.0          │
+│  🛡️ CYBERGUARDIAN                              v1.3.0          │
 ├─────────────────────────────────────────────────────────────────┤
 │  [Process] [File] [Registry] [Network] [Real-Time]              │
 ├─────────────────────────────────────────────────────────────────┤
@@ -681,7 +681,7 @@ python main.py --update-rules
 ## Command Reference
 
 ```
-CyberGuardian v1.2.0 - Windows Malware & Anomaly Detection Tool
+CyberGuardian v1.3.0 - Windows Malware & Anomaly Detection Tool
 
 USAGE:
     python main.py [OPTIONS]
@@ -724,5 +724,5 @@ For issues, feature requests, or contributions:
    - Steps to reproduce
    - System information (Windows version, Python version)
 =======
-*CyberGuardian v1.2.0 - For questions or issues, visit: [https://github.com/Souhaieb-Marzouk/CyberGuardian](https://github.com/Souhaieb-Marzouk/CyberGuardian)*
+*CyberGuardian v1.3.0 - For questions or issues, visit: [https://github.com/Souhaieb-Marzouk/CyberGuardian](https://github.com/Souhaieb-Marzouk/CyberGuardian)*
 >>>>>>> 3966fb43c2fba7d03f8de813ad8fc9c57ca1b62a

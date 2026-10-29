@@ -18,6 +18,7 @@ from .registry_scanner import RegistryScanner, RegistryEntry
 from .network_scanner import NetworkScanner, ConnectionInfo
 from .realtime_monitor import RealTimeMonitor, MonitorEvent, get_monitor
 from .yara_manager import YaraManager, YaraMatch, get_yara_manager
+from .eventlog_scanner import EventLogScanner, get_eventlog_scanner
 
 __all__ = [
     # Base
@@ -46,4 +47,8 @@ __all__ = [
     'YaraManager',
     'YaraMatch',
     'get_yara_manager',
+
+    # Event log
+    'EventLogScanner',
+    'get_eventlog_scanner',
 ]

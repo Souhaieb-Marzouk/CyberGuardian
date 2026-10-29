@@ -19,7 +19,7 @@ from pathlib import Path
 
 # Configuration
 APP_NAME = "CyberGuardian"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 MAIN_SCRIPT = "main.py"
 ICON_PATH = "assets/icon.png"
 

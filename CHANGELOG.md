@@ -3,6 +3,30 @@
 All notable changes to CyberGuardian are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-10-29
+
+### Added
+
+- **Event log analysis** (`scanners/eventlog_scanner.py`): reads System,
+  Application, Security, Defender, PowerShell and Task Scheduler channels via the
+  Windows Event Log API with incremental cursors. Detects log clearing, new
+  services, scheduled tasks, account creation/privilege changes, brute force,
+  suspicious service paths, encoded PowerShell and LOLBAS command lines.
+- **Guided AI response plan**: analysis now returns four ordered lists -
+  verification, containment, remediation and validation - rendered in the result
+  view and included in the JSON API.
+- **PC Health dialog**: 0-100 score, plain-language status and recommendations.
+- **"What changed on my PC" timeline**: snapshots startup entries, services and
+  scheduled tasks and reports additions/removals since the previous run.
+- **Automated tests and CI**: `tests/` suite and a GitHub Actions workflow that
+  runs the tests on Python 3.10/3.12 and builds the executable.
+
+### Changed
+
+- New visual theme: deeper navy background, mint/cyan accents, consistent card
+  and dialog styling.
+- CLI: `--eventlog` (also included in `--scan-all`).
+
 ## [1.2.0] - 2026-10-28
 
 Security and reliability release. No detection signatures were removed; several

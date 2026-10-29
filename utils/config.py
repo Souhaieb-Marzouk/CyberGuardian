@@ -100,6 +100,10 @@ class ScanConfig:
     realtime_network_monitor: bool = True
     realtime_poll_interval: int = 5  # seconds
 
+    # Event log analysis
+    eventlog_enabled: bool = True
+    eventlog_lookback_hours: int = 24
+
 
 @dataclass
 class APIConfig:
@@ -153,7 +157,7 @@ class UIConfig:
 class AppConfig:
     """Main application configuration."""
     app_name: str = "CyberGuardian"
-    version: str = "1.2.0"
+    version: str = "1.3.0"
     author: str = "Souhaieb Marzouk"
     
     scan: ScanConfig = field(default_factory=ScanConfig)
