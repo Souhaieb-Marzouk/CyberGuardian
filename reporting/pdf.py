@@ -9,8 +9,10 @@ returning ``None`` so the CLI/UI can tell the user what to install.
 
 from __future__ import annotations
 
+import html as html_module
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from xml.sax.saxutils import escape as xml_escape
 
 from reporting.generator import ReportGenerator
 from utils.config import REPORTS_DIR
@@ -46,8 +48,8 @@ def _playbook_html(analysis: Dict[str, Any]) -> str:
     for title, items in sections:
         if not items:
             continue
-        parts.append(f"<h3>{title}</h3><ol>")
-        parts.extend(f"<li>{item}</li>" for item in items)
+        parts.append(f"<h3>{html_module.escape(title)}</h3><ol>")
+        parts.extend(f"<li>{html_module.escape(str(item))}</li>" for item in items)
         parts.append("</ol>")
     parts.append("</div>")
     return "".join(parts)
@@ -92,22 +94,30 @@ def export_pdf(
     try:
         styles = getSampleStyleSheet()
         doc = SimpleDocTemplate(str(target), pagesize=A4, title=title)
-        story = [Paragraph(title, styles["Title"]), Spacer(1, 12)]
+        story = [Paragraph(xml_escape(title), styles["Title"]), Spacer(1, 12)]
 
         for result in results:
-            story.append(Paragraph(f"{result.scan_type.title()} scan", styles["Heading2"]))
             story.append(Paragraph(
-                f"{result.total_items} items, {len(result.detections)} detections, "
-                f"status {result.status.value}",
+                xml_escape(f"{result.scan_type.title()} scan"), styles["Heading2"]
+            ))
+            story.append(Paragraph(
+                xml_escape(
+                    f"{result.total_items} items, {len(result.detections)} detections, "
+                    f"status {result.status.value}"
+                ),
                 styles["Normal"],
             ))
             for detection in result.detections:
+                # ReportLab's Paragraph parses a small XML dialect: a raw '&' or
+                # '<' in a file name/command line aborted the whole export.
                 story.append(Paragraph(
-                    f"[{detection.risk_level.value.upper()}] {detection.detection_type}: "
-                    f"{detection.indicator}",
+                    xml_escape(
+                        f"[{detection.risk_level.value.upper()}] "
+                        f"{detection.detection_type}: {detection.indicator}"
+                    ),
                     styles["Heading3"],
                 ))
-                story.append(Paragraph(detection.description, styles["Normal"]))
+                story.append(Paragraph(xml_escape(detection.description or ""), styles["Normal"]))
                 story.append(Spacer(1, 6))
             story.append(Spacer(1, 12))
 
@@ -121,7 +131,9 @@ def export_pdf(
             if items:
                 story.append(Paragraph(heading, styles["Heading2"]))
                 for index, item in enumerate(items, 1):
-                    story.append(Paragraph(f"{index}. {item}", styles["Normal"]))
+                    story.append(Paragraph(
+                        xml_escape(f"{index}. {item}"), styles["Normal"]
+                    ))
                 story.append(Spacer(1, 8))
 
         doc.build(story)

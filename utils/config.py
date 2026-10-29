@@ -7,10 +7,9 @@ Handles settings, API keys, and runtime parameters.
 
 import os
 import sys
-import json
 import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 import logging
 
@@ -157,7 +156,7 @@ class UIConfig:
 class AppConfig:
     """Main application configuration."""
     app_name: str = "CyberGuardian"
-    version: str = "1.4.0"
+    version: str = "1.4.1"
     author: str = "Souhaieb Marzouk"
     
     scan: ScanConfig = field(default_factory=ScanConfig)
@@ -199,43 +198,93 @@ class ConfigManager:
             try:
                 with open(self.config_file, 'r', encoding='utf-8') as f:
                     data = yaml.safe_load(f) or {}
+                if not isinstance(data, dict):
+                    raise ValueError("configuration root must be a mapping")
                 self._apply_config_dict(data)
                 logger.info(f"Configuration loaded from {self.config_file}")
             except Exception as e:
                 logger.error(f"Failed to load config: {e}, using defaults")
         else:
-            self._save_config()
-            logger.info("Created default configuration file")
-        
+            try:
+                self._save_config()
+                logger.info("Created default configuration file")
+            except OSError as e:
+                logger.warning(f"Could not create default configuration: {e}")
+
         # Override with environment variables
         self._load_env_overrides()
-    
+
+    @staticmethod
+    def _coerce(current: Any, value: Any) -> Any:
+        """Coerce *value* to the type of the existing setting.
+
+        A hand-edited YAML file used to be able to put a string into
+        ``max_scan_threads`` or ``scan_timeout_seconds``, which later crashed
+        the scanners.  Invalid values are rejected instead.
+        """
+        if isinstance(current, bool):
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)) and value in (0, 1):
+                return bool(value)
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in ("true", "yes", "on", "1"):
+                    return True
+                if lowered in ("false", "no", "off", "0"):
+                    return False
+            raise ValueError(f"expected a boolean, got {value!r}")
+        if isinstance(current, int):
+            if isinstance(value, bool):
+                raise ValueError(f"expected an integer, got {value!r}")
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+                return int(value.strip())
+            raise ValueError(f"expected an integer, got {value!r}")
+        if isinstance(current, float):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+            raise ValueError(f"expected a number, got {value!r}")
+        if isinstance(current, str):
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (int, float, bool)):
+                return str(value)
+            raise ValueError(f"expected text, got {value!r}")
+        return value
+
     def _apply_config_dict(self, data: Dict[str, Any]) -> None:
-        """Apply dictionary values to config object."""
-        # Scan settings
-        if 'scan' in data:
-            for key, value in data['scan'].items():
-                if hasattr(self.config.scan, key):
-                    setattr(self.config.scan, key, value)
-        
-        # API settings
-        if 'api' in data:
-            for key, value in data['api'].items():
-                if hasattr(self.config.api, key):
-                    setattr(self.config.api, key, value)
-        
-        # UI settings
-        if 'ui' in data:
-            for key, value in data['ui'].items():
-                if hasattr(self.config.ui, key):
-                    setattr(self.config.ui, key, value)
-        
+        """Apply dictionary values to config object, validating types."""
+        sections = {
+            'scan': self.config.scan,
+            'api': self.config.api,
+            'ui': self.config.ui,
+        }
+        for section, target in sections.items():
+            values = data.get(section)
+            if values is None:
+                continue
+            if not isinstance(values, dict):
+                logger.warning(f"Ignoring '{section}' section: expected a mapping")
+                continue
+            for key, value in values.items():
+                if not hasattr(target, key):
+                    continue
+                try:
+                    setattr(target, key, self._coerce(getattr(target, key), value))
+                except (TypeError, ValueError) as exc:
+                    logger.warning(f"Ignoring config {section}.{key}: {exc}")
+
         # Top-level settings
         for key in ['auto_update_rules', 'rules_update_url', 'update_check_interval_hours',
                     'log_level', 'log_max_size_mb', 'log_backup_count',
                     'max_scan_threads', 'scan_timeout_seconds']:
             if key in data:
-                setattr(self.config, key, data[key])
+                try:
+                    setattr(self.config, key, self._coerce(getattr(self.config, key), data[key]))
+                except (TypeError, ValueError) as exc:
+                    logger.warning(f"Ignoring config {key}: {exc}")
     
     def _load_env_overrides(self) -> None:
         """Load configuration overrides from environment variables."""
@@ -284,12 +333,25 @@ class ConfigManager:
             },
         }
         
-        with open(self.config_file, 'w', encoding='utf-8') as f:
-            yaml.dump(data, f, default_flow_style=False)
-    
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_file = self.config_file.with_name(self.config_file.name + ".tmp")
+        try:
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, self.config_file)
+        except Exception:
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
     def save(self) -> None:
         """Public method to save configuration."""
         self._save_config()
+
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get a configuration value by key (dot notation supported)."""
@@ -332,6 +394,13 @@ def get_config() -> ConfigManager:
     global _config_instance
     if _config_instance is None:
         _config_instance = ConfigManager()
+    return _config_instance
+
+
+def set_config_path(config_file) -> ConfigManager:
+    """Load configuration from an explicit path (used by ``--config``)."""
+    global _config_instance
+    _config_instance = ConfigManager(Path(config_file))
     return _config_instance
 
 

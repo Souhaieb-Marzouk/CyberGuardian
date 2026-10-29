@@ -9,7 +9,6 @@ import os
 import re
 import sys
 import logging
-import threading
 import webbrowser
 import ctypes
 import subprocess
@@ -23,19 +22,16 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QTabWidget, QTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QProgressBar, QStatusBar,
     QSystemTrayIcon, QMenu, QAction, QMessageBox, QFileDialog,
-    QSplitter, QFrame, QGroupBox, QScrollArea, QDialog,
+    QFrame, QGroupBox, QScrollArea, QDialog,
     QDialogButtonBox, QLineEdit, QComboBox, QCheckBox,
-    QTreeWidget, QTreeWidgetItem, QToolBar, QStyle, QSpinBox,
-    QFormLayout, QTabWidget as QTabWidgetInner, QWidget as QWidgetInner,
-    QListWidget, QListWidgetItem, QRadioButton, QButtonGroup,
+    QTreeWidget, QTreeWidgetItem, QSpinBox,
+    QFormLayout, QTabWidget as QTabWidgetInner,
 )
 from PyQt5.QtCore import (
-    Qt, QTimer, QThread, pyqtSignal, QSize, QSettings,
-    QPropertyAnimation, QEasingCurve, QRect
+    Qt, QTimer, QThread, pyqtSignal, QSettings,
 )
 from PyQt5.QtGui import (
-    QIcon, QFont, QColor, QPalette, QPixmap, QPainter,
-    QPen, QBrush, QLinearGradient, QFontDatabase
+    QIcon, QFont, QColor, QPixmap, QPainter, QPen,
 )
 
 from scanners.base_scanner import ScanResult, Detection, RiskLevel, ScanStatus
@@ -95,15 +91,17 @@ from scanners.network_scanner import NetworkScanner
 from scanners.realtime_monitor import RealTimeMonitor
 from scanners.yara_manager import get_yara_manager
 from reporting.generator import ReportGenerator
-from utils.config import get_config, APP_DIR
-from utils.logging_utils import get_logger, setup_logging
+from utils.config import get_config
+from utils.logging_utils import get_logger
 from utils.whitelist import get_whitelist
 from utils.secure_storage import get_secure_storage, load_all_api_keys
 from core.health import HealthReport, TimelineStore, compute_health
 
 # Import AI analyzer
 try:
-    from ai_analysis.analyzer import AIAnalyzer, AIProvider, AnalysisResult, Verdict, get_ai_analyzer
+    from ai_analysis.analyzer import (  # noqa: F401 - presence check
+        AIAnalyzer, AIProvider, AnalysisResult, Verdict, get_ai_analyzer,
+    )
     AI_ANALYSIS_AVAILABLE = True
 except ImportError:
     AI_ANALYSIS_AVAILABLE = False
@@ -111,7 +109,7 @@ except ImportError:
 
 # Import VirusTotal checker
 try:
-    from threat_intel.virustotal_checker import (
+    from threat_intel.virustotal_checker import (  # noqa: F401 - presence check
         get_virustotal_checker, is_virustotal_available,
         VirusTotalChecker, IOCResult
     )
@@ -121,6 +119,11 @@ except ImportError:
     logging.warning("VirusTotal checker module not available")
 
 logger = get_logger('ui.main_window')
+
+# AI work may outlive its dialog (an HTTP request cannot be interrupted).  Keep
+# a strong reference so Qt never destroys a running QThread, which aborts the
+# whole process with "QThread: Destroyed while thread is still running".
+_ACTIVE_AI_WORKERS: set = set()
 
 
 # Cyber Theme Colors
@@ -155,10 +158,17 @@ def run_as_admin():
     if sys.platform == 'win32':
         try:
             script = os.path.abspath(sys.argv[0])
-            params = ' '.join(sys.argv[1:])
-            ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable, f'"{script}" {params}', None, 1
+            params = subprocess.list2cmdline(sys.argv[1:])
+            command = f'"{script}" {params}'.strip()
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", sys.executable, command, None, 1
             )
+            # ShellExecuteW returns a value > 32 on success.  It returns
+            # <= 32 when the user cancels UAC; the caller must not quit the
+            # current instance in that case.
+            if int(result) <= 32:
+                logger.error(f"Elevation was cancelled or failed (ShellExecuteW={result})")
+                return False
             return True
         except Exception as e:
             logger.error(f"Failed to elevate privileges: {e}")
@@ -778,24 +788,31 @@ class DetectionDialog(QDialog):
             logger.debug(f"Error checking whitelist status: {e}")
             self._is_whitelisted = False
     
+    def _stop_ai_worker(self):
+        """Detach a running AI worker so the dialog can close safely."""
+        worker = self.ai_worker
+        if worker is None or not worker.isRunning():
+            return
+        worker.cancel()
+        # The dialog is going away; stop delivering its signals.
+        for signal in (worker.finished, worker.error):
+            try:
+                signal.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+        worker.finished.connect(lambda *_, w=worker: _ACTIVE_AI_WORKERS.discard(w))
+        worker.error.connect(lambda *_, w=worker: _ACTIVE_AI_WORKERS.discard(w))
+
     def closeEvent(self, event):
         """Handle dialog close event - clean up worker thread."""
         self._dialog_closing = True
-        if self.ai_worker and self.ai_worker.isRunning():
-            # Cancel the worker and wait for it to finish
-            self.ai_worker.cancel()
-            self.ai_worker.quit()
-            if not self.ai_worker.wait(2000):  # Wait up to 2 seconds
-                logger.warning("AI worker did not finish in time")
+        self._stop_ai_worker()
         event.accept()
-    
+
     def reject(self):
         """Handle dialog rejection (ESC key or close button)."""
         self._dialog_closing = True
-        if self.ai_worker and self.ai_worker.isRunning():
-            self.ai_worker.cancel()
-            self.ai_worker.quit()
-            self.ai_worker.wait(1000)
+        self._stop_ai_worker()
         super().reject()
     
     def setup_ui(self):
@@ -1362,7 +1379,7 @@ class DetectionDialog(QDialog):
         # Build waiting message
         vt_info = ""
         if vt_result and vt_result.iocs_checked > 0:
-            vt_info = f"\n\nVirusTotal Results:\n"
+            vt_info = "\n\nVirusTotal Results:\n"
             vt_info += f"  • IOCs Checked: {vt_result.iocs_checked}\n"
             vt_info += f"  • Malicious: {vt_result.iocs_malicious}\n"
             vt_info += f"  • Clean: {vt_result.iocs_clean}\n"
@@ -1383,6 +1400,10 @@ class DetectionDialog(QDialog):
         )
         
         self.ai_worker = AIAnalysisWorker(detection_data, provider)
+        _ACTIVE_AI_WORKERS.add(self.ai_worker)
+        worker = self.ai_worker
+        self.ai_worker.finished.connect(lambda *_, w=worker: _ACTIVE_AI_WORKERS.discard(w))
+        self.ai_worker.error.connect(lambda *_, w=worker: _ACTIVE_AI_WORKERS.discard(w))
         self.ai_worker.finished.connect(self._on_ai_finished)
         self.ai_worker.error.connect(self._on_ai_error)
         self.ai_worker.start()
@@ -1962,9 +1983,9 @@ class DetectionDialog(QDialog):
         
         # Add MITRE techniques if available
         if result.mitre_techniques:
-            html += f'''
+            html += '''
         <div class="section">
-            <h2>🎯 MITRE ATT&CK Techniques</h2>
+            <h2>🎯 MITRE ATT&amp;CK Techniques</h2>
             <ul class="mitre-list">
 '''
             for technique in result.mitre_techniques:
@@ -1974,7 +1995,7 @@ class DetectionDialog(QDialog):
         
         # Add indicators
         if result.indicators:
-            html += f'''
+            html += '''
         <div class="section">
             <h2>🔍 Indicators of Compromise</h2>
             <ul class="indicators-list">
@@ -1986,7 +2007,7 @@ class DetectionDialog(QDialog):
         
         # Add recommendations
         if result.recommendations:
-            html += f'''
+            html += '''
         <div class="section">
             <h2>✅ Recommendations</h2>
             <ol class="recommendations-list">
@@ -2373,9 +2394,25 @@ class SettingsDialog(QDialog):
     
     def _open_yara_dir(self):
         from utils.config import YARA_RULES_DIR
-        subprocess.Popen(f'explorer "{YARA_RULES_DIR}"')
+        try:
+            YARA_RULES_DIR.mkdir(parents=True, exist_ok=True)
+            subprocess.Popen(['explorer.exe', str(YARA_RULES_DIR)])
+        except OSError as exc:
+            QMessageBox.warning(self, "Open Failed", f"Could not open the Yara rules folder:\n{exc}")
     
     def save_settings(self):
+        """Persist settings, reporting failures instead of crashing the app."""
+        try:
+            self._apply_settings()
+        except Exception as exc:
+            logger.error(f"Failed to save settings: {exc}")
+            QMessageBox.critical(
+                self, "Settings Not Saved",
+                f"Could not save settings:\n{exc}\n\n"
+                "Check that the configuration folder is writable.",
+            )
+
+    def _apply_settings(self):
         """Save all settings to configuration."""
         # General settings
         self.config.set('ui.theme', self.theme_combo.currentText())
@@ -2474,6 +2511,12 @@ class SettingsDialog(QDialog):
             self.ai_enabled.setChecked(True)
             self.ai_auto_analyze.setChecked(False)
             self.ai_preferred.setCurrentText('deepseek')
+
+            QMessageBox.information(
+                self, "Defaults Restored",
+                "Default values have been restored in this window.\n\n"
+                "Click 'Save Settings' to write them to disk.",
+            )
 
 
 class AddWhitelistDialog(QDialog):
@@ -2746,21 +2789,12 @@ class MainWindow(QMainWindow):
     def _restart_as_normal_user(self):
         """Restart the application as a normal user (non-admin)."""
         try:
-            # Use explorer.exe to launch the process without elevation
-            # This effectively drops admin privileges
+            # explorer.exe launches the process with the current (non-elevated)
+            # token.  Pass arguments as a list so a quote in the path cannot
+            # inject a shell command.
             script = os.path.abspath(sys.argv[0])
-            params = ' '.join(sys.argv[1:])
-            
-            # Use cmd.exe with runas verb to run as invoker (non-elevated)
-            # Note: This uses the "runasinvoker" compatibility flag
-            import subprocess
-            
-            # Method: Use explorer to launch (runs as non-elevated user)
-            subprocess.Popen(
-                f'explorer "{script}"',
-                shell=True
-            )
-            
+            subprocess.Popen(['explorer.exe', script])
+
             self.quit_application()
         except Exception as e:
             logger.error(f"Failed to restart as normal user: {e}")
@@ -3294,10 +3328,14 @@ class MainWindow(QMainWindow):
     
     def open_tools_dialog(self):
         """Open the toolbox (startup, software, reputation, canaries, quarantine)."""
-        from ui.tools_dialog import ToolsDialog
+        try:
+            from ui.tools_dialog import ToolsDialog
 
-        dialog = ToolsDialog(self)
-        dialog.exec_()
+            dialog = ToolsDialog(self)
+            dialog.exec_()
+        except Exception as exc:
+            logger.error(f"Could not open Tools: {exc}")
+            QMessageBox.critical(self, "Tools Error", f"Could not open the tools window:\n{exc}")
 
     def start_eventlog_scan(self):
         """Run the Windows event log analysis in the background."""
@@ -3311,14 +3349,18 @@ class MainWindow(QMainWindow):
 
     def open_health_dialog(self):
         """Show the plain-language health score and recent system changes."""
-        report = compute_health(self.scan_results)
         try:
-            changes = TimelineStore().diff()
+            report = compute_health(self.scan_results)
+            try:
+                changes = TimelineStore().diff()
+            except Exception as exc:
+                logger.debug(f"Timeline diff failed: {exc}")
+                changes = []
+            dialog = HealthDialog(report, changes, self)
+            dialog.exec_()
         except Exception as exc:
-            logger.debug(f"Timeline diff failed: {exc}")
-            changes = []
-        dialog = HealthDialog(report, changes, self)
-        dialog.exec_()
+            logger.error(f"Could not open PC Health: {exc}")
+            QMessageBox.critical(self, "PC Health Error", f"Could not build the health report:\n{exc}")
 
     def start_network_scan(self):
         """Start network scan with deep analysis support."""
@@ -3334,6 +3376,15 @@ class MainWindow(QMainWindow):
             target: Optional target (file path, IP, etc.)
             deep_analysis: Enable deep/forensic analysis mode
         """
+        if self.current_worker is not None and self.current_worker.isRunning():
+            # Two scan threads used to run at once, overwriting the stop button
+            # and the result state.  Refuse to start a second scan.
+            QMessageBox.information(
+                self, "Scan Already Running",
+                "A scan is already running. Wait for it to finish or stop it first.",
+            )
+            return
+
         self.set_ui_busy(True)
         self._current_scan_name = scan_name
         self.status_label.setText(f"Running {scan_name}{' (Deep Analysis)' if deep_analysis else ''}...")
@@ -3515,7 +3566,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.stop_btn.setVisible(False)
         
-        self.status_label.setText(f"Scan failed")
+        self.status_label.setText("Scan failed")
         self.log(f"ERROR: {error}")
         
         QMessageBox.critical(self, "Scan Error", f"Scan failed: {error}")
@@ -3524,7 +3575,8 @@ class MainWindow(QMainWindow):
         """Set UI busy state."""
         buttons = [
             self.process_btn, self.file_btn, self.registry_btn,
-            self.network_btn, self.realtime_btn
+            self.network_btn, self.eventlog_btn, self.health_btn,
+            self.tools_btn, self.realtime_btn,
         ]
         
         for btn in buttons:
@@ -3656,27 +3708,42 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to delete file: {str(e)}")
     
     def _quarantine_file(self, detection: Detection):
-        """Move file to quarantine."""
+        """Move the file into the encrypted quarantine vault."""
         if not detection.file_path:
             QMessageBox.warning(self, "No File", "No file path associated with this detection.")
             return
-        
-        quarantine_dir = Path(APP_DIR) / "quarantine"
-        quarantine_dir.mkdir(exist_ok=True)
-        
+
         source_path = Path(detection.file_path)
-        dest_path = quarantine_dir / f"{source_path.name}.quarantine"
-        
+        if not source_path.is_file():
+            QMessageBox.warning(self, "File Not Found", "The file no longer exists.")
+            return
+
+        # Use the shared vault (encrypted, restorable, retained for 30 days).
+        # The old implementation moved files into APP_DIR/quarantine, which is
+        # the PyInstaller temporary directory in a frozen build - the quarantined
+        # file disappeared when the application exited.
         try:
-            import shutil
-            shutil.move(str(source_path), str(dest_path))
-            self.log(f"Quarantined file: {detection.file_path} -> {dest_path}")
-            QMessageBox.information(self, "Success", f"File has been quarantined to:\n{dest_path}")
-        except PermissionError:
-            QMessageBox.critical(self, "Access Denied", 
-                "Cannot quarantine file. Run CyberGuardian as administrator.")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to quarantine file: {str(e)}")
+            from core.quarantine import QuarantineError, get_vault
+
+            entry = get_vault().quarantine(
+                source_path,
+                detection_id=detection.detection_id,
+                reason=detection.detection_type,
+            )
+        except QuarantineError as exc:
+            QMessageBox.critical(self, "Quarantine Failed", str(exc))
+            return
+        except Exception as exc:
+            logger.error(f"Unexpected quarantine failure: {exc}")
+            QMessageBox.critical(self, "Quarantine Failed", f"Failed to quarantine file: {exc}")
+            return
+
+        self.log(f"Quarantined file: {detection.file_path} -> {entry.entry_id}")
+        QMessageBox.information(
+            self, "Success",
+            "File has been moved to the encrypted quarantine vault.\n\n"
+            "You can restore it from Tools > Quarantine.",
+        )
     
     def _add_to_whitelist(self, detection: Detection):
         """Add detection indicator to whitelist."""
@@ -3820,7 +3887,10 @@ class MainWindow(QMainWindow):
         
         path = Path(detection.file_path)
         if path.exists():
-            subprocess.Popen(f'explorer /select,"{path}"')
+            try:
+                subprocess.Popen(['explorer.exe', f'/select,{path}'])
+            except Exception as exc:
+                QMessageBox.warning(self, "Open Failed", f"Could not open Explorer:\n{exc}")
         else:
             QMessageBox.warning(self, "File Not Found", "The file no longer exists.")
     
@@ -3983,9 +4053,14 @@ For more information, see the USER_GUIDE.md file.
         if not self.scan_results:
             QMessageBox.information(self, "No Results", "No scan results to export.")
             return
-        
-        filepath = self.report_generator.generate_html_report(self.scan_results)
-        
+
+        try:
+            filepath = self.report_generator.generate_html_report(self.scan_results)
+        except Exception as exc:
+            logger.error(f"Report generation failed: {exc}")
+            QMessageBox.critical(self, "Export Failed", f"Could not generate the report:\n{exc}")
+            return
+
         reply = QMessageBox.question(
             self, "Report Generated",
             f"Report saved to:\n{filepath}\n\nOpen in browser?",
@@ -3993,7 +4068,10 @@ For more information, see the USER_GUIDE.md file.
         )
         
         if reply == QMessageBox.Yes:
-            webbrowser.open(Path(str(filepath)).as_uri())
+            try:
+                webbrowser.open(Path(str(filepath)).as_uri())
+            except Exception as exc:
+                logger.warning(f"Could not open report: {exc}")
     
     def export_detections(self):
         """Export detections to file."""
@@ -4015,10 +4093,15 @@ For more information, see the USER_GUIDE.md file.
                         'remediation': detection.remediation,
                         'evidence': detection.evidence
                     })
-            
-            with open(filepath, 'w') as f:
-                json.dump(detections_data, f, indent=2)
-            
+
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(detections_data, f, indent=2)
+            except OSError as exc:
+                QMessageBox.critical(self, "Export Failed",
+                                     f"Could not write detections to {filepath}:\n{exc}")
+                return
+
             self.log(f"Detections exported to {filepath}")
     
     def clear_results(self):
@@ -4036,8 +4119,13 @@ For more information, see the USER_GUIDE.md file.
         )
         
         if filepath:
-            with open(filepath, 'w') as f:
-                f.write(self.log_text.toPlainText())
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(self.log_text.toPlainText())
+            except OSError as exc:
+                QMessageBox.critical(self, "Save Failed",
+                                     f"Could not write logs to {filepath}:\n{exc}")
+                return
             self.log(f"Logs saved to {filepath}")
     
     def closeEvent(self, event):
@@ -4055,7 +4143,15 @@ For more information, see the USER_GUIDE.md file.
             except Exception:
                 pass
             if not worker.wait(5000):
+                # Destroying the window would destroy a running QThread and
+                # abort the process.  Keep the window open instead.
                 logger.warning("Scan worker did not stop within 5 seconds")
+                QMessageBox.warning(
+                    self, "Scan Still Running",
+                    "The scan is still stopping. Please try again in a moment.",
+                )
+                event.ignore()
+                return
 
         self.save_settings()
         event.accept()
@@ -4074,7 +4170,12 @@ For more information, see the USER_GUIDE.md file.
                 worker.cancel_scan()
             except Exception:
                 pass
-            worker.wait(5000)
+            if not worker.wait(5000):
+                QMessageBox.warning(
+                    self, "Scan Still Running",
+                    "The scan is still stopping. Please try Exit again in a moment.",
+                )
+                return
 
         QApplication.quit()
 
@@ -4144,7 +4245,6 @@ class HealthDialog(QDialog):
             lines = []
             for change in changes[:40]:
                 icon = "+" if change.action == "added" else "-"
-                color = CYBER_COLORS["medium"] if change.action == "added" else CYBER_COLORS["text_muted"]
                 lines.append(f"{icon} [{change.kind}] {change.name}")
             body = QTextEdit()
             body.setReadOnly(True)

@@ -74,34 +74,44 @@ class ReportGenerator:
     def __init__(self):
         self.config = get_config()
         self.reports_dir = REPORTS_DIR
-        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.reports_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning(f"Could not create reports directory {self.reports_dir}: {exc}")
     
     def generate_html_report(
         self,
         results: List[ScanResult],
         title: str = "CyberGuardian Security Report",
-        include_summary: bool = True
+        include_summary: bool = True,
+        output: Optional[Path] = None
     ) -> Path:
         """
         Generate an HTML report from scan results.
-        
+
         Args:
             results: List of scan results
             title: Report title
             include_summary: Whether to include executive summary
-        
+            output: Optional destination path.  When omitted a timestamped file
+                is written to the reports directory.
+
         Returns:
             Path to generated report
         """
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        filename = f"cyberguardian_report_{timestamp}.html"
-        filepath = self.reports_dir / filename
-        
+        if output:
+            filepath = Path(output)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            filename = f"cyberguardian_report_{timestamp}.html"
+            filepath = self.reports_dir / filename
+
         html_content = self._build_html(results, title, include_summary)
-        
+
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(html_content)
-        
+
         logger.info(f"Generated report: {filepath}")
         return filepath
     
@@ -287,6 +297,7 @@ class ReportGenerator:
         .risk-medium {{ background: var(--color-medium); color: #333; }}
         .risk-low {{ background: var(--color-low); color: #333; }}
         .risk-info {{ background: var(--color-info); color: white; }}
+        .risk-clean {{ background: var(--color-low); color: #333; }}
         
         .detection-details {{
             display: grid;
@@ -407,7 +418,7 @@ class ReportGenerator:
         """Build report header."""
         return f'''
         <div class="header">
-            <h1>ðŸ›¡ï¸ {esc(title)}</h1>
+            <h1>&#128737;&#65039; {esc(title)}</h1>
             <div class="subtitle">Comprehensive Security Analysis Report</div>
             <div class="timestamp">Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</div>
         </div>
@@ -484,6 +495,7 @@ class ReportGenerator:
             RiskLevel.MEDIUM: 2,
             RiskLevel.LOW: 3,
             RiskLevel.INFO: 4,
+            RiskLevel.CLEAN: 5,
         }
         
         sorted_detections = sorted(
@@ -499,7 +511,7 @@ class ReportGenerator:
         else:
             detections_html = f'''
             <div class="no-detections">
-                <h3>âœ“ No Threats Detected</h3>
+                <h3>&#10003; No Threats Detected</h3>
                 <p>All scanned items were clean.</p>
             </div>
             '''
@@ -507,7 +519,7 @@ class ReportGenerator:
         return f'''
         <div class="scan-section">
             <div class="scan-header">
-                <h2>ðŸ” {esc(result.scan_type).title()} Analysis</h2>
+                <h2>&#128269; {esc(result.scan_type).title()} Analysis</h2>
                 <div class="meta">
                     Duration: {result.scan_duration_seconds:.2f}s | 
                     Target: {esc(result.scan_target)} | Items: {result.total_items} |
@@ -564,7 +576,7 @@ class ReportGenerator:
             remediation_items = '\n'.join(f'<li>{r}</li>' for r in detection.remediation)
             remediation_html = f'''
             <div class="remediation">
-                <h4>ðŸ”§ Remediation Steps</h4>
+                <h4>&#128295; Remediation Steps</h4>
                 <ul>
                     {remediation_items}
                 </ul>
@@ -577,7 +589,7 @@ class ReportGenerator:
             evidence_json = json.dumps(detection.evidence, indent=2)
             evidence_html = f'''
             <div class="evidence">
-                <h4>ðŸ“‹ Evidence</h4>
+                <h4>&#128203; Evidence</h4>
                 <pre>{esc(evidence_json)}</pre>
             </div>
             '''
@@ -609,24 +621,30 @@ class ReportGenerator:
     def generate_pdf_report(
         self,
         results: List[ScanResult],
-        title: str = "CyberGuardian Security Report"
+        title: str = "CyberGuardian Security Report",
+        output: Optional[Path] = None
     ) -> Optional[Path]:
         """
         Generate a PDF report (requires weasyprint or pdfkit).
-        
+
         Args:
             results: List of scan results
             title: Report title
-        
+            output: Optional destination path
+
         Returns:
             Path to generated PDF or None if failed
         """
         # Generate HTML first
         html_path = self.generate_html_report(results, title)
-        
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        pdf_filename = f"cyberguardian_report_{timestamp}.pdf"
-        pdf_path = self.reports_dir / pdf_filename
+
+        if output:
+            pdf_path = Path(output)
+            pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            pdf_filename = f"cyberguardian_report_{timestamp}.pdf"
+            pdf_path = self.reports_dir / pdf_filename
         
         try:
             # Try weasyprint
@@ -657,53 +675,108 @@ class ReportGenerator:
     def export_json(
         self,
         results: List[ScanResult],
-        title: str = "CyberGuardian Security Report"
+        title: str = "CyberGuardian Security Report",
+        output: Optional[Path] = None
     ) -> Path:
         """Export scan results as JSON."""
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        filename = f"cyberguardian_report_{timestamp}.json"
-        filepath = self.reports_dir / filename
-        
+        if output:
+            filepath = Path(output)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            filename = f"cyberguardian_report_{timestamp}.json"
+            filepath = self.reports_dir / filename
+
         data = {
             'title': title,
             'generated_at': datetime.utcnow().isoformat(),
             'version': self.config.config.version,
             'results': [r.to_dict() for r in results]
         }
-        
+
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, default=str)
-        
+
         logger.info(f"Exported JSON report: {filepath}")
+        return filepath
+
+    def generate_text_report(
+        self,
+        results: List[ScanResult],
+        title: str = "CyberGuardian Security Report",
+        output: Optional[Path] = None
+    ) -> Path:
+        """Write a plain-text report suitable for terminals and ticketing."""
+        if output:
+            filepath = Path(output)
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            filepath = self.reports_dir / f"cyberguardian_report_{timestamp}.txt"
+
+        total_items = sum(r.total_items for r in results)
+        total_detections = sum(len(r.detections) for r in results)
+
+        lines = [
+            title,
+            "=" * len(title),
+            f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"Version:   {self.config.config.version}",
+            "",
+            f"Items scanned: {total_items}",
+            f"Detections:    {total_detections}",
+            "",
+        ]
+        for result in results:
+            lines.append(f"[{result.scan_type.upper()}] {result.status.value} "
+                         f"({result.total_items} items, {len(result.detections)} detections)")
+            lines.append(f"Target: {result.scan_target or '-'}")
+            order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4, "clean": 5}
+            for detection in sorted(result.detections,
+                                    key=lambda d: order.get(d.risk_level.value, 9)):
+                lines.append(
+                    f"  {detection.risk_level.value.upper():8} {detection.detection_type}: "
+                    f"{detection.indicator}"
+                )
+                lines.append(f"           {detection.description}")
+            lines.append("")
+
+        filepath.write_text("\n".join(lines), encoding="utf-8")
+        logger.info(f"Generated text report: {filepath}")
         return filepath
 
 
 def generate_report(
     results: List[ScanResult],
     format: str = 'html',
-    title: str = "CyberGuardian Security Report"
+    title: str = "CyberGuardian Security Report",
+    output: Optional[Path] = None
 ) -> Path:
     """
     Convenience function to generate a report.
-    
+
     Args:
         results: Scan results
-        format: Output format ('html', 'pdf', 'json')
+        format: Output format ('html', 'pdf', 'json', 'text')
         title: Report title
-    
+        output: Optional destination path
+
     Returns:
         Path to generated report
     """
     generator = ReportGenerator()
-    
+
     if format == 'pdf':
-        result = generator.generate_pdf_report(results, title)
+        result = generator.generate_pdf_report(results, title, output=output)
         if result:
             return result
         # Fall back to HTML if PDF fails
         format = 'html'
-    
+
     if format == 'json':
-        return generator.export_json(results, title)
-    
-    return generator.generate_html_report(results, title)
+        return generator.export_json(results, title, output=output)
+
+    if format == 'text':
+        return generator.generate_text_report(results, title, output=output)
+
+    return generator.generate_html_report(results, title, output=output)

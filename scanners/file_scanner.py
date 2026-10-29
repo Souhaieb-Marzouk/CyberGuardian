@@ -1346,28 +1346,34 @@ class FileScanner(BaseScanner):
             return 'application/octet-stream'
     
     def _analyze_file(self, file_info: FileInfo) -> List[Detection]:
-        """Run all detection checks on a file."""
+        """Run the detection checks enabled in Settings > Scan."""
         detections = []
-        
-        detection_methods = [
-            self._check_yara_rules,
-            self._check_entropy,
-            self._check_hash_reputation,
-            self._check_pe_file,
-            self._check_office_document,
-            self._check_steganography,
-        ]
-        
+
+        settings = self.config.config.scan
+        detection_methods = []
+        if settings.file_scan_yara:
+            detection_methods.append(self._check_yara_rules)
+        if settings.file_scan_entropy:
+            detection_methods.append(self._check_entropy)
+        if settings.file_scan_hashes:
+            detection_methods.append(self._check_hash_reputation)
+        if settings.file_scan_pe:
+            detection_methods.append(self._check_pe_file)
+        # Office-document checks are cheap and have no separate toggle.
+        detection_methods.append(self._check_office_document)
+        if settings.file_scan_stego:
+            detection_methods.append(self._check_steganography)
+
         for method in detection_methods:
             if self.is_cancelled():
                 break
-            
+
             try:
                 method_detections = method(file_info)
                 detections.extend(method_detections)
             except Exception as e:
                 self.logger.debug(f"Detection method error: {e}")
-        
+
         return detections
     
     def _check_yara_rules(self, file_info: FileInfo) -> List[Detection]:

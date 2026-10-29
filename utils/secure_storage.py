@@ -10,7 +10,7 @@ import os
 import sys
 import logging
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 from pathlib import Path
 
 logger = logging.getLogger('cyberguardian.secure_storage')
@@ -47,9 +47,22 @@ class SecureStorage:
         from utils.config import DATA_DIR
         self._storage_dir = Path(DATA_DIR) / "secure"
         self._storage_file = self._storage_dir / ".credentials"
-        
-        if not self._use_keyring:
+
+        # Always prepare the DPAPI fallback on Windows: keyring can be
+        # installed but have no usable backend (locked Credential Manager,
+        # broken keyring/platform combination), and losing API keys silently is
+        # worse than storing them in a DPAPI-encrypted file.
+        if sys.platform == 'win32' or not self._use_keyring:
             self._setup_fallback_storage()
+
+        if self._use_keyring:
+            try:
+                keyring.get_keyring()
+            except Exception as exc:
+                logger.warning(f"keyring backend unavailable ({exc}); using DPAPI fallback")
+                self._use_keyring = False
+                if not self._use_dpapi:
+                    self._setup_fallback_storage()
     
     def _setup_fallback_storage(self):
         """Setup fallback encrypted file storage."""
@@ -109,8 +122,17 @@ class SecureStorage:
         
         try:
             if self._use_keyring:
-                keyring.set_password(SERVICE_NAME, key_name, api_key)
-                logger.info(f"Stored {key_name} in secure credential storage")
+                try:
+                    keyring.set_password(SERVICE_NAME, key_name, api_key)
+                    logger.info(f"Stored {key_name} in secure credential storage")
+                except Exception as exc:
+                    logger.warning(
+                        f"Could not store {key_name} in the credential manager "
+                        f"({exc}); using DPAPI fallback"
+                    )
+                    if not self._use_dpapi:
+                        self._setup_fallback_storage()
+                    self._store_fallback(key_name, api_key)
             else:
                 self._store_fallback(key_name, api_key)
             
@@ -139,9 +161,21 @@ class SecureStorage:
         
         try:
             if self._use_keyring:
-                api_key = keyring.get_password(SERVICE_NAME, key_name)
+                try:
+                    api_key = keyring.get_password(SERVICE_NAME, key_name)
+                except Exception as exc:
+                    logger.warning(
+                        f"Could not read {key_name} from the credential manager "
+                        f"({exc}); trying DPAPI fallback"
+                    )
+                    api_key = None
                 if api_key:
                     self._cache[key_name] = api_key
+                    return api_key
+                # A key stored through the fallback must still be found when
+                # keyring exists but has no entry for it.
+                if self._use_dpapi:
+                    return self._retrieve_fallback(key_name)
                 return api_key
             else:
                 return self._retrieve_fallback(key_name)
@@ -164,9 +198,11 @@ class SecureStorage:
             if self._use_keyring:
                 try:
                     keyring.delete_password(SERVICE_NAME, key_name)
-                except keyring.errors.PasswordNotFoundError:
+                except keyring.errors.PasswordDeleteError:
                     pass  # Key doesn't exist, that's fine
                 except Exception as e:
+                    # Modern keyring releases removed PasswordNotFoundError;
+                    # never let error-class drift break every Settings save.
                     logger.debug(f"Key not found in keyring: {e}")
             
             # Clear from cache

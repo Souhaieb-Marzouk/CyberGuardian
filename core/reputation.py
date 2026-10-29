@@ -85,20 +85,30 @@ def check_file(path: str, use_online: bool = True) -> Verdict:
     score = 80
     verdict = "unknown"
 
-    info = verify_file(target)
-    details["signature"] = info.status
-    details["publisher"] = info.signer
+    info = None
+    try:
+        info = verify_file(target)
+    except Exception as exc:  # signature verification must not abort the check
+        logger.debug(f"Signature verification failed for {target}: {exc}")
+
+    if info is not None:
+        details["signature"] = info.status
+        details["publisher"] = info.signer
+    else:
+        details["signature"] = "verification_error"
+        details["publisher"] = ""
     details["size"] = file_path.stat().st_size
     details["sha256"] = _sha256(file_path)
 
-    if info.is_valid:
+    if info is not None and info.is_valid:
         reasons.append(
             f"Digitally signed by {info.signer or 'a trusted publisher'}"
         )
         score = max(score, 90)
         verdict = "safe"
     else:
-        reasons.append(f"No valid digital signature ({info.status})")
+        status = info.status if info is not None else "verification failed"
+        reasons.append(f"No valid digital signature ({status})")
         score -= 20
 
     lowered = target.lower()
@@ -170,28 +180,45 @@ def _sha256(path: Path) -> str:
 def check_url(url: str, use_online: bool = True) -> Verdict:
     """Assess a URL using parsing heuristics and, optionally, VirusTotal."""
     target = (url or "").strip()
-    parsed = urlparse(target)
+    try:
+        parsed = urlparse(target)
+        scheme = parsed.scheme
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError as exc:
+        # urlparse()/`.port` raise for malformed IPv6 literals and ports outside
+        # 0-65535; a user pasting a bad link must get a verdict, not a traceback.
+        return _finalize(Verdict(
+            target, "url", "suspicious", 25,
+            "This link is malformed and cannot be trusted.",
+            [f"Invalid URL: {exc}"], {"scheme": "", "host": "", "error": str(exc)},
+        ))
+
     reasons: List[str] = []
-    details: Dict[str, Any] = {"scheme": parsed.scheme, "host": parsed.netloc}
+    details: Dict[str, Any] = {"scheme": scheme, "host": host}
     score = 85
     verdict = "safe"
 
-    if parsed.scheme not in ("http", "https"):
+    if scheme not in ("http", "https"):
         return _finalize(Verdict(
             target, "url", "suspicious", 30,
             "Only http and https links can be checked.",
-            [f"Unsupported scheme: {parsed.scheme or 'none'}"], details,
+            [f"Unsupported scheme: {scheme or 'none'}"], details,
         ))
 
-    if parsed.scheme == "http":
+    if scheme == "http":
         reasons.append("Link does not use HTTPS")
         score -= 15
         verdict = "suspicious"
 
-    host = (parsed.hostname or "").lower()
     if not host:
         return _finalize(Verdict(target, "url", "suspicious", 25,
                                  "The link has no valid host name.", reasons, details))
+
+    if re.search(r"[\s\x00-\x1f\x7f]", host) or host.startswith(".") or host.endswith("."):
+        reasons.append("Host name contains invalid characters")
+        score -= 30
+        verdict = "suspicious"
 
     try:
         ipaddress.ip_address(host)
@@ -223,8 +250,8 @@ def check_url(url: str, use_online: bool = True) -> Verdict:
         if verdict == "safe":
             verdict = "unknown"
 
-    if parsed.port and parsed.port not in (80, 443):
-        reasons.append(f"Non-standard port {parsed.port}")
+    if port and port not in (80, 443):
+        reasons.append(f"Non-standard port {port}")
         score -= 10
 
     if not reasons:

@@ -3,6 +3,71 @@
 All notable changes to CyberGuardian are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-10-29
+
+Reliability and hardening release: the v1.4 tools now work as documented, and
+failure paths no longer crash or corrupt data.
+
+### Fixed
+
+- **Quarantine from a detection now uses the encrypted vault.** The old action
+  moved files into `APP_DIR/quarantine`; in a frozen build that is the
+  PyInstaller temporary directory, so quarantined files disappeared on exit.
+  Files can now be restored from Tools → Quarantine.
+- **Scan settings are honoured.** The file, process, network and registry
+  checkboxes in Settings now actually enable/disable those detection methods
+  (previously every check always ran). `process_scan_memory` also gates deep
+  memory analysis.
+- **No overlapping scans.** Every scan-initiating button is disabled while a
+  scan runs, and a second scan request is refused. Closing the main window or a
+  detection dialog no longer destroys a running `QThread`.
+- **UI failures are reported, not fatal.** Settings save, report export, YARA
+  folder opening, canary install/check/remove and quarantine refresh/restore/
+  delete are wrapped; failures show a dialog instead of aborting the app.
+- **UTF-8 exports.** "Save Logs" and "Export Detections" no longer raise
+  `UnicodeEncodeError` on emoji or non-Latin paths.
+- **HTML report encoding.** Corrupted emoji bytes (`ðŸ…`, `âœ…`) were rendering as
+  mojibake; they are now HTML entities.
+- **PDF export.** The ReportLab fallback escapes `&`/`<`, which previously
+  aborted the whole export, and the AI playbook is HTML-escaped.
+- **Malformed URLs are handled.** Ports outside 0-65535, invalid IPv6 literals,
+  host names with whitespace and empty hosts return a "suspicious" verdict
+  instead of raising `ValueError`.
+- **Configuration robustness.** Malformed values/sections are ignored instead of
+  disabling the rest of the file; writes are atomic; `--config FILE` is now
+  actually applied.
+- **CLI export.** `--export FILE` writes to the requested path, and
+  `--format text` produces a plain-text report.
+- **Whitelist.** Malformed expiry dates fail closed instead of crashing a scan;
+  CIDR ranges use real IP matching; publisher matching requires whole words;
+  unknown sections and malformed entries are skipped; system entries are saved
+  once at startup instead of after every entry.
+- **Quarantine vault.** A failure while removing the original file now rolls back
+  the vault entry (no more "quarantined" files that still exist); restore errors
+  are wrapped in `QuarantineError`; files over 512 MB are refused before loading
+  them into memory.
+- **Credential storage.** Key deletion no longer references the removed
+  `keyring.errors.PasswordNotFoundError`; if the credential manager is
+  unavailable, DPAPI file storage is used instead of losing keys.
+- **Logging.** The console formatter no longer mutates `record.levelname`, which
+  leaked ANSI escapes into the file and JSON logs.
+- **YARA rules.** Two built-in rule files did not compile (missing
+  `import "math"` and unreferenced strings). They are fixed, and previously
+  generated copies are repaired on load.
+- **Startup impact.** Signed binaries in user-writable folders are rated medium;
+  Startup-folder shortcuts are no longer described as "not validly signed".
+
+### Changed
+
+- Version 1.4.1. YARA is now bundled in the Windows build when `yara-python` is
+  available (the build only warns when it is not).
+- Reset to Defaults explains that the values must still be saved.
+
+### Tests
+
+- 79 automated tests, adding a failure-injection suite (`tests/test_hardening.py`)
+  and a headless every-button UI test (`tests/test_ui_buttons.py`).
+
 ## [1.4.0] - 2026-10-29
 
 ### Added

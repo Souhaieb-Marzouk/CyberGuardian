@@ -7,15 +7,15 @@ and network connections to minimize false positives.
 
 import os
 import json
-import hashlib
+import ipaddress
 import logging
 from pathlib import Path
-from typing import Dict, List, Set, Optional, Any
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 import re
 
-from .config import DATA_DIR, get_config
+from .config import DATA_DIR
 
 logger = logging.getLogger('cyberguardian.utils.whitelist')
 
@@ -194,17 +194,26 @@ class WhitelistManager:
         ]
     
     def _load_whitelist(self) -> None:
-        """Load whitelist from file."""
+        """Load whitelist from file, skipping malformed entries."""
         if self.WHITELIST_FILE.exists():
             try:
                 with open(self.WHITELIST_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                
-                for entry_type, entries in data.get('entries', {}).items():
-                    for entry_data in entries:
-                        entry = WhitelistEntry(**entry_data)
-                        self.entries[entry_type].append(entry)
-                
+
+                entries = data.get('entries', {}) if isinstance(data, dict) else {}
+                if not isinstance(entries, dict):
+                    raise ValueError("'entries' must be a mapping")
+                for entry_type, items in entries.items():
+                    if entry_type not in self.entries or not isinstance(items, list):
+                        logger.warning(f"Skipping unknown whitelist section: {entry_type}")
+                        continue
+                    for entry_data in items:
+                        try:
+                            entry = WhitelistEntry(**entry_data)
+                            self.entries[entry_type].append(entry)
+                        except (TypeError, ValueError) as exc:
+                            logger.warning(f"Skipping malformed whitelist entry: {exc}")
+
                 logger.info(f"Loaded {sum(len(e) for e in self.entries.values())} whitelist entries")
             except Exception as e:
                 logger.error(f"Failed to load whitelist: {e}")
@@ -238,41 +247,49 @@ class WhitelistManager:
             logger.error(f"Failed to save whitelist: {e}")
     
     def _initialize_system_whitelist(self) -> None:
-        """Initialize system-level whitelist entries."""
+        """Initialize system-level whitelist entries (single disk write)."""
+        added = 0
         # Add system processes
         for proc_name in self.SYSTEM_PROCESSES:
-            self.add_entry(
+            added += self.add_entry(
                 identifier=proc_name.lower(),
                 entry_type='name',
                 source='system',
-                description=f'Windows system process: {proc_name}'
+                description=f'Windows system process: {proc_name}',
+                save=False,
             )
         
         # Add trusted publishers
         for publisher in self.TRUSTED_PUBLISHERS:
-            self.add_entry(
+            added += self.add_entry(
                 identifier=publisher.lower(),
                 entry_type='signature',
                 source='microsoft' if 'microsoft' in publisher.lower() else 'third_party',
-                description=f'Trusted publisher: {publisher}'
+                description=f'Trusted publisher: {publisher}',
+                save=False,
             )
         
         # Add trusted network indicators
         for indicator in self.TRUSTED_NETWORK_INDICATORS:
             if '/' in indicator:  # IP range
-                self.add_entry(
+                added += self.add_entry(
                     identifier=indicator,
                     entry_type='ip',
                     source='system',
-                    description=f'Trusted IP range: {indicator}'
+                    description=f'Trusted IP range: {indicator}',
+                    save=False,
                 )
             else:  # Domain
-                self.add_entry(
+                added += self.add_entry(
                     identifier=indicator,
                     entry_type='domain',
                     source='system',
-                    description=f'Trusted domain: {indicator}'
+                    description=f'Trusted domain: {indicator}',
+                    save=False,
                 )
+
+        if added:
+            self._save_whitelist()
     
     def add_entry(
         self,
@@ -281,7 +298,8 @@ class WhitelistManager:
         source: str,
         description: str = "",
         expiry_date: Optional[str] = None,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
+        save: bool = True
     ) -> bool:
         """
         Add an entry to the whitelist.
@@ -320,8 +338,9 @@ class WhitelistManager:
         )
         
         self.entries[entry_type].append(entry)
-        self._save_whitelist()
-        
+        if save:
+            self._save_whitelist()
+
         logger.debug(f"Added whitelist entry: {entry_type}={identifier}")
         return True
     
@@ -359,10 +378,21 @@ class WhitelistManager:
         # Check direct match
         for entry in self.entries.get(entry_type, []):
             if entry.identifier == identifier:
-                # Check expiry
+                # Check expiry (a malformed date is treated as no expiry rather
+                # than raising inside a scan thread).
                 if entry.expiry_date:
-                    if datetime.utcnow() > datetime.fromisoformat(entry.expiry_date):
-                        continue  # Entry expired
+                    try:
+                        expired = datetime.utcnow() > datetime.fromisoformat(entry.expiry_date)
+                    except (TypeError, ValueError):
+                        # Fail closed: a malformed expiry must not extend trust
+                        # indefinitely (nor crash a running scan).
+                        logger.warning(
+                            f"Ignoring whitelist entry with invalid expiry date "
+                            f"{entry.expiry_date!r}: {entry.identifier}"
+                        )
+                        expired = True
+                    if expired:
+                        continue
                 return True
         
         # Special handling for paths
@@ -432,20 +462,22 @@ class WhitelistManager:
         return False
     
     def _is_trusted_ip(self, ip: str) -> bool:
-        """Check if IP is in trusted IP ranges."""
-        # Simple check - for production, implement proper CIDR matching
-        ip = ip.lower().strip()
-        
+        """Check whether *ip* belongs to a trusted address or CIDR range."""
+        try:
+            address = ipaddress.ip_address((ip or "").strip())
+        except ValueError:
+            return False
+
         for entry in self.entries.get('ip', []):
-            if '/' in entry.identifier:
-                # CIDR range - simplified check
-                # In production, use ipaddress module for proper matching
-                prefix = entry.identifier.split('/')[0]
-                if ip.startswith(prefix.rsplit('.', 1)[0]):
+            candidate = (entry.identifier or "").strip()
+            try:
+                if '/' in candidate:
+                    if address in ipaddress.ip_network(candidate, strict=False):
+                        return True
+                elif address == ipaddress.ip_address(candidate):
                     return True
-            elif ip == entry.identifier:
-                return True
-        
+            except ValueError:
+                continue
         return False
     
     def is_system_process(self, process_name: str) -> bool:
@@ -453,13 +485,21 @@ class WhitelistManager:
         return (process_name or "").lower() in self._system_processes_lower
     
     def is_trusted_signature(self, publisher: str) -> bool:
-        """Check if publisher is in trusted list."""
+        """Check if publisher is in trusted list (whole words only)."""
         if not publisher or not publisher.strip():
             # An empty publisher must never match: ``"" in "microsoft"`` is True.
             return False
         publisher = publisher.lower().strip()
         for trusted in self.TRUSTED_PUBLISHERS:
-            if trusted.lower() in publisher or publisher in trusted.lower():
+            candidate = trusted.lower().strip()
+            if not candidate:
+                continue
+            if publisher == candidate:
+                return True
+            # Match whole words in either direction ("Microsoft" matches
+            # "Microsoft Corporation", but "NotMicrosoft Ltd" must not).
+            if (re.search(rf"(?<![a-z0-9]){re.escape(candidate)}(?![a-z0-9])", publisher)
+                    or re.search(rf"(?<![a-z0-9]){re.escape(publisher)}(?![a-z0-9])", candidate)):
                 return True
         return False
     
@@ -495,20 +535,37 @@ class WhitelistManager:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
+
+            if not isinstance(data, dict):
+                raise ValueError("whitelist root must be an object")
+
             if not merge:
                 self.entries = {k: [] for k in self.entries.keys()}
-            
-            for entry_type, entries in data.get('entries', {}).items():
+
+            entries_section = data.get('entries', {})
+            if not isinstance(entries_section, dict):
+                raise ValueError("'entries' must be an object")
+
+            for entry_type, entries in entries_section.items():
+                if entry_type not in self.entries:
+                    logger.warning(f"Skipping unknown whitelist type: {entry_type}")
+                    continue
+                if not isinstance(entries, list):
+                    continue
                 for entry_data in entries:
+                    if not isinstance(entry_data, dict) or not entry_data.get('identifier'):
+                        continue
                     self.add_entry(
                         identifier=entry_data['identifier'],
                         entry_type=entry_type,
                         source=entry_data.get('source', 'user'),
                         description=entry_data.get('description', ''),
-                        metadata=entry_data.get('metadata')
+                        expiry_date=entry_data.get('expiry_date'),
+                        metadata=entry_data.get('metadata'),
+                        save=False,
                     )
-            
+
+            self._save_whitelist()
             return True
         except Exception as e:
             logger.error(f"Failed to import whitelist: {e}")

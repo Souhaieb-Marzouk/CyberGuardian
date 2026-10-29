@@ -27,7 +27,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 # Configuration
 APP_NAME = "CyberGuardian"
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 MAIN_SCRIPT = "main.py"
 ICON_PATH = "assets/icon.png"
 
@@ -102,7 +102,6 @@ def get_pyinstaller_args():
         '--hidden-import', 'PyQt5.QtGui',
         '--hidden-import', 'PyQt5.QtWidgets',
         '--hidden-import', 'psutil',
-        '--hidden-import', 'yara',
         '--hidden-import', 'requests',
         '--hidden-import', 'keyring',
         '--hidden-import', 'keyring.backends',
@@ -120,6 +119,13 @@ def get_pyinstaller_args():
         # UAC Admin (request admin privileges)
         '--uac-admin',
     ]
+
+    # YARA is optional: include its extension module when it is installed.
+    try:
+        import yara  # noqa: F401
+        args.extend(['--hidden-import', 'yara'])
+    except ImportError:
+        pass
     
     # Add data files if assets directory exists and has files
     assets_dir = Path("assets")
@@ -210,7 +216,8 @@ def check_prerequisites():
         print("  ✓ PyInstaller installed")
     
     # Check required packages
-    required = ['PyQt5', 'psutil', 'yara', 'requests', 'keyring']
+    required = ['PyQt5', 'psutil', 'requests', 'keyring']
+    optional = ['yara']
     for package in required:
         try:
             __import__(package)
@@ -218,6 +225,12 @@ def check_prerequisites():
         except ImportError:
             print(f"  ✗ {package} not found")
             return False
+    for package in optional:
+        try:
+            __import__(package)
+            print(f"  ✓ {package}")
+        except ImportError:
+            print(f"  ⚠ {package} not installed - YARA scanning will be disabled in this build")
     
     # Windows-specific checks
     if sys.platform == 'win32':
@@ -233,8 +246,9 @@ def check_prerequisites():
             try:
                 import site
                 site_packages = site.getsitepackages()[0]
-                post_install = f'python "{site_packages}\\..\\Scripts\\pywin32_postinstall.py" -install'
-                os.system(post_install)
+                post_install = Path(site_packages).parent / 'Scripts' / 'pywin32_postinstall.py'
+                if post_install.exists():
+                    subprocess.run([sys.executable, str(post_install), '-install'], check=False)
             except Exception as e:
                 print(f"    Warning: Could not run post-install: {e}")
                 print("    Please run manually: python Scripts\\pywin32_postinstall.py -install")

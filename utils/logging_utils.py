@@ -9,7 +9,7 @@ import logging
 import logging.handlers
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import json
 from .config import LOG_DIR, get_config
@@ -42,11 +42,14 @@ class CyberFormatter(logging.Formatter):
     
     def format(self, record: logging.LogRecord) -> str:
         """Format the log record with optional colors."""
-        # Add color if enabled and outputting to terminal
+        # Never mutate the shared record: the same record is passed to the file
+        # and JSON handlers after the console handler, and colored level names
+        # used to leak ANSI escapes into log files.
         if self.use_colors and sys.stdout.isatty():
+            record = logging.makeLogRecord(record.__dict__)
             color = self.COLORS.get(record.levelname, '')
             record.levelname = f"{color}{record.levelname}{self.RESET}"
-        
+
         return super().format(record)
 
 
@@ -56,7 +59,7 @@ class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Format the log record as JSON."""
         log_entry = {
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             'level': record.levelname,
             'logger': record.name,
             'message': record.getMessage(),
@@ -136,65 +139,76 @@ def setup_logging(
     max_size_mb = max_size_mb or config.config.log_max_size_mb
     backup_count = backup_count or config.config.log_backup_count
     
-    # Ensure log directory exists
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
+    # Ensure log directory exists.  A read-only install directory (or a full
+    # disk) must not prevent the application from starting: fall back to
+    # console-only logging and keep going.
+    file_logging = True
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        file_logging = False
+        sys.stderr.write(f"Warning: could not create log directory {log_dir}: {exc}\n")
+
     # Main log file
     log_file = log_dir / 'cyberguardian.log'
     audit_log_file = log_dir / 'audit.log'
-    
+
     # Convert log level string to constant
     level = getattr(logging, log_level.upper(), logging.INFO)
-    
+
     # Create root logger
     root_logger = logging.getLogger('cyberguardian')
     root_logger.setLevel(level)
-    
+
     # Clear existing handlers
     root_logger.handlers.clear()
-    
+
     # Console handler with colors - use configured level
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)  # Use configured level, not hardcoded INFO
     console_handler.setFormatter(CyberFormatter(use_colors=True))
     root_logger.addHandler(console_handler)
     _log_handlers['console'] = console_handler
-    
-    # File handler with rotation - always DEBUG to capture everything
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file,
-        maxBytes=max_size_mb * 1024 * 1024,
-        backupCount=backup_count,
-        encoding='utf-8'
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(CyberFormatter(use_colors=False))
-    root_logger.addHandler(file_handler)
-    _log_handlers['file'] = file_handler
-    
-    # JSON log for machine parsing
-    json_log_file = log_dir / 'cyberguardian.json'
-    json_handler = logging.handlers.RotatingFileHandler(
-        json_log_file,
-        maxBytes=max_size_mb * 1024 * 1024,
-        backupCount=backup_count,
-        encoding='utf-8'
-    )
-    json_handler.setLevel(logging.DEBUG)
-    json_handler.setFormatter(JSONFormatter())
-    root_logger.addHandler(json_handler)
-    _log_handlers['json'] = json_handler
-    
-    # Audit log handler
-    audit_handler = AuditLogHandler(audit_log_file)
-    audit_handler.setLevel(logging.INFO)
-    
-    # Create audit logger
-    audit_logger = logging.getLogger('cyberguardian.audit')
-    audit_logger.addHandler(audit_handler)
-    audit_logger.setLevel(logging.INFO)
-    audit_logger.propagate = False
-    
+
+    if file_logging:
+        try:
+            # File handler with rotation - always DEBUG to capture everything
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_file,
+                maxBytes=max_size_mb * 1024 * 1024,
+                backupCount=backup_count,
+                encoding='utf-8'
+            )
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(CyberFormatter(use_colors=False))
+            root_logger.addHandler(file_handler)
+            _log_handlers['file'] = file_handler
+
+            # JSON log for machine parsing
+            json_log_file = log_dir / 'cyberguardian.json'
+            json_handler = logging.handlers.RotatingFileHandler(
+                json_log_file,
+                maxBytes=max_size_mb * 1024 * 1024,
+                backupCount=backup_count,
+                encoding='utf-8'
+            )
+            json_handler.setLevel(logging.DEBUG)
+            json_handler.setFormatter(JSONFormatter())
+            root_logger.addHandler(json_handler)
+            _log_handlers['json'] = json_handler
+
+            # Audit log handler
+            audit_handler = AuditLogHandler(audit_log_file)
+            audit_handler.setLevel(logging.INFO)
+
+            # Create audit logger
+            audit_logger = logging.getLogger('cyberguardian.audit')
+            audit_logger.addHandler(audit_handler)
+            audit_logger.setLevel(logging.INFO)
+            audit_logger.propagate = False
+        except OSError as exc:
+            sys.stderr.write(f"Warning: file logging disabled: {exc}\n")
+
     return root_logger
 
 

@@ -41,6 +41,10 @@ CONTAINER_SUFFIX = ".qtn"
 METADATA_SUFFIX = ".json"
 DEFAULT_RETENTION_DAYS = 30
 
+# DPAPI works on one contiguous buffer, so a file has to fit in memory while it
+# is encrypted.  Refuse absurdly large samples instead of exhausting RAM.
+MAX_QUARANTINE_BYTES = 512 * 1024 * 1024
+
 
 # ---------------------------------------------------------------------------
 # DPAPI
@@ -159,22 +163,36 @@ class QuarantineVault:
         if not source.is_file():
             raise QuarantineError(f"Not a file: {source}")
 
-        sha256 = self._hash_file(source)
+        try:
+            size = source.stat().st_size
+        except OSError as exc:
+            raise QuarantineError(f"Could not read {source}: {exc}") from exc
+        if size > MAX_QUARANTINE_BYTES:
+            raise QuarantineError(
+                f"{source.name} is too large to quarantine safely "
+                f"({size / (1024 * 1024):.0f} MB; limit is "
+                f"{MAX_QUARANTINE_BYTES / (1024 * 1024):.0f} MB)"
+            )
+
+        try:
+            sha256 = self._hash_file(source)
+            data = source.read_bytes()
+            encrypted = _dpapi(data, protect=True)
+        except OSError as exc:
+            raise QuarantineError(f"Could not encrypt {source}: {exc}") from exc
+
         entry_id = uuid.uuid4().hex
         entry = QuarantineEntry(
             entry_id=entry_id,
             original_path=str(source),
             name=source.name,
-            size=source.stat().st_size,
+            size=size,
             sha256=sha256,
             detection_id=detection_id,
             reason=reason,
             expires_at=(datetime.utcnow() + timedelta(days=self.retention_days)).isoformat(),
             vault_dir=str(self.directory),
         )
-
-        data = source.read_bytes()
-        encrypted = _dpapi(data, protect=True)
 
         container_tmp = Path(str(entry.container_path) + ".tmp")
         metadata_tmp = Path(str(entry.metadata_path) + ".tmp")
@@ -186,9 +204,15 @@ class QuarantineVault:
             # Only remove the original once the vault copy is durable.
             source.unlink()
         except Exception as exc:
-            for leftover in (container_tmp, metadata_tmp):
+            # Roll the vault back as well: a half-committed entry would make the
+            # file appear quarantined while the original is still on disk (or
+            # vice-versa).  Removing a path that was never created is harmless.
+            for leftover in (
+                container_tmp, metadata_tmp,
+                entry.container_path, entry.metadata_path,
+            ):
                 try:
-                    leftover.unlink()
+                    leftover.unlink(missing_ok=True)
                 except OSError:
                     pass
             raise QuarantineError(f"Could not quarantine {source}: {exc}") from exc
@@ -226,7 +250,8 @@ class QuarantineVault:
             raise QuarantineError(f"Container missing for entry {entry_id}")
 
         try:
-            data = _dpapi(entry.container_path.read_bytes(), protect=False)
+            encrypted = entry.container_path.read_bytes()
+            data = _dpapi(encrypted, protect=False)
         except OSError as exc:
             raise QuarantineError(
                 "Quarantined data could not be decrypted (corrupt or created by another user/machine)"
@@ -237,7 +262,6 @@ class QuarantineVault:
         target = Path(destination) if destination else Path(entry.original_path)
         if target.is_dir():
             target = target / entry.name
-        target.parent.mkdir(parents=True, exist_ok=True)
 
         # Never overwrite: pick the first free "<name>.restored-N" variant.
         final = target
@@ -246,10 +270,23 @@ class QuarantineVault:
             final = target.with_name(f"{target.stem}.restored-{counter}{target.suffix}")
             counter += 1
 
-        final.write_bytes(data)
-        if self._hash_file(final) != entry.sha256:
-            final.unlink(missing_ok=True)
-            raise QuarantineError("Restored file failed integrity verification")
+        try:
+            final.parent.mkdir(parents=True, exist_ok=True)
+            final.write_bytes(data)
+            if self._hash_file(final) != entry.sha256:
+                raise QuarantineError("Restored file failed integrity verification")
+        except QuarantineError:
+            try:
+                final.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        except OSError as exc:
+            try:
+                final.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise QuarantineError(f"Could not restore {entry.name}: {exc}") from exc
 
         self._remove_entry_files(entry)
         logger.info(f"Restored {entry.name} to {final}")
@@ -260,8 +297,7 @@ class QuarantineVault:
         entry = self.get(entry_id)
         if entry is None:
             return False
-        self._remove_entry_files(entry)
-        return True
+        return self._remove_entry_files(entry)
 
     def purge_expired(self, now: Optional[datetime] = None) -> int:
         """Delete entries older than the retention window."""
@@ -284,12 +320,18 @@ class QuarantineVault:
     def total_size(self) -> int:
         return sum(entry.size for entry in self.list_entries())
 
-    def _remove_entry_files(self, entry: QuarantineEntry) -> None:
+    def _remove_entry_files(self, entry: QuarantineEntry) -> bool:
+        """Delete an entry's files, returning True only when both are gone."""
+        removed = True
         for path in (entry.container_path, entry.metadata_path):
             try:
                 path.unlink(missing_ok=True)
+                if path.exists():
+                    removed = False
             except OSError as exc:
+                removed = False
                 logger.warning(f"Could not delete {path}: {exc}")
+        return removed
 
 
 _vault: Optional[QuarantineVault] = None

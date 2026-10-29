@@ -11,12 +11,9 @@ button; all business logic lives in ``core/``.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import List, Optional
-
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView,
+    QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget, QTableWidget,
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -26,6 +23,9 @@ from core.quarantine import QuarantineError, get_vault
 from core.reputation import check_target
 from core.software import audit, get_installed_software
 from core.startup import enumerate_startup, set_enabled
+from utils.logging_utils import get_logger
+
+logger = get_logger("ui.tools_dialog")
 
 COLORS = {
     "bg": "#070b14", "card": "#121b2c", "border": "#22304a",
@@ -48,7 +48,7 @@ def _button(text: str, handler=None, primary: bool = False) -> QPushButton:
     return button
 
 
-def _table(headers: List[str]) -> QTableWidget:
+def _table(headers: list[str]) -> QTableWidget:
     table = QTableWidget(0, len(headers))
     table.setHorizontalHeaderLabels(headers)
     table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -133,12 +133,23 @@ class ToolsDialog(QDialog):
             QMessageBox.information(self, "Startup", "Select an entry first.")
             return
         entry = self._startup_entries[row]
-        if set_enabled(entry, enabled):
+        try:
+            changed = set_enabled(entry, enabled)
+        except Exception as exc:
+            logger.warning(f"Startup change failed: {exc}")
+            changed = False
+        if changed:
             self.refresh_startup()
+        elif entry.source == "service":
+            QMessageBox.warning(
+                self, "Startup",
+                "Could not change this service. Administrator privileges are required.",
+            )
         else:
             QMessageBox.warning(
                 self, "Startup",
-                "Could not change this entry. Services require Administrator.",
+                "This startup item cannot be changed here. "
+                "Use Task Manager > Startup apps instead.",
             )
 
     # ----------------------------------------------------------------- software
@@ -258,17 +269,32 @@ class ToolsDialog(QDialog):
             self.canary_status.setText("No canaries installed.")
 
     def _install_canaries(self):
-        created = get_canary_manager().install()
+        try:
+            created = get_canary_manager().install()
+        except Exception as exc:
+            logger.warning(f"Canary install failed: {exc}")
+            QMessageBox.critical(self, "Canaries", f"Could not create canary files:\n{exc}")
+            return
         self._refresh_canary_status()
         QMessageBox.information(self, "Canaries", f"Created {len(created)} canary file(s).")
 
     def _remove_canaries(self):
-        removed = get_canary_manager().remove()
+        try:
+            removed = get_canary_manager().remove()
+        except Exception as exc:
+            logger.warning(f"Canary removal failed: {exc}")
+            QMessageBox.critical(self, "Canaries", f"Could not remove canary files:\n{exc}")
+            return
         self._refresh_canary_status()
         QMessageBox.information(self, "Canaries", f"Removed {removed} canary file(s).")
 
     def _check_canaries(self):
-        triggered = get_canary_manager().check()
+        try:
+            triggered = get_canary_manager().check()
+        except Exception as exc:
+            logger.warning(f"Canary check failed: {exc}")
+            QMessageBox.critical(self, "Canaries", f"Could not check canary files:\n{exc}")
+            return
         if triggered:
             QMessageBox.critical(
                 self, "Possible ransomware",
@@ -297,7 +323,13 @@ class ToolsDialog(QDialog):
 
     def refresh_quarantine(self):
         self.quarantine_table.setRowCount(0)
-        self._quarantine_entries = get_vault().list_entries()
+        try:
+            self._quarantine_entries = get_vault().list_entries()
+        except Exception as exc:
+            logger.warning(f"Could not list quarantine: {exc}")
+            self._quarantine_entries = []
+            QMessageBox.warning(self, "Quarantine", f"Could not read the quarantine vault:\n{exc}")
+            return
         for entry in self._quarantine_entries:
             row = self.quarantine_table.rowCount()
             self.quarantine_table.insertRow(row)
@@ -319,18 +351,27 @@ class ToolsDialog(QDialog):
             return
         try:
             restored = get_vault().restore(entry.entry_id)
-            QMessageBox.information(self, "Quarantine", f"Restored to:\n{restored}")
         except QuarantineError as exc:
             QMessageBox.critical(self, "Quarantine", str(exc))
+        except Exception as exc:
+            logger.warning(f"Restore failed: {exc}")
+            QMessageBox.critical(self, "Quarantine", f"Could not restore the file:\n{exc}")
+        else:
+            QMessageBox.information(self, "Quarantine", f"Restored to:\n{restored}")
         self.refresh_quarantine()
 
     def _delete_selected(self):
         entry = self._selected_entry()
         if entry is None:
+            QMessageBox.information(self, "Quarantine", "Select an entry first.")
             return
         if QMessageBox.question(
             self, "Delete permanently",
             f"Delete {entry.name} permanently? This cannot be undone.",
         ) == QMessageBox.Yes:
-            get_vault().delete(entry.entry_id)
+            try:
+                get_vault().delete(entry.entry_id)
+            except Exception as exc:
+                logger.warning(f"Delete failed: {exc}")
+                QMessageBox.critical(self, "Quarantine", f"Could not delete the file:\n{exc}")
             self.refresh_quarantine()

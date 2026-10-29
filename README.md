@@ -355,26 +355,29 @@ Enable Real-Time Monitoring for continuous protection:
 
 ---
 
-### What's New in v1.2.0
+### What's New in v1.4.1
 
-Security and reliability release. Highlights:
+Reliability and hardening release for the v1.4 tools. Highlights:
 
-- 🔐 **Signature checking without PowerShell** — Authenticode is verified through
-  WinVerifyTrust (including catalog-signed system binaries); removes a command
-  injection vector and ~200 process spawns per scan
-- 🛡️ **Report and prompt hardening** — HTML reports escape all scanned content;
-  AI prompts treat evidence as untrusted data and model output is validated
-- 🔑 **Secrets stay in the credential store** — API keys are no longer written to
-  `config.yaml`; existing keys are migrated automatically
-- 🌐 **VirusTotal** — failed lookups are no longer cached as "clean"; results are
-  gathered on a worker thread and actually reach the AI prompt
-- 🎯 **Fewer false positives** — steganography no longer flags every image,
-  registry scans no longer flag every service, beaconing ignores persistent
-  connections, findings are de-duplicated
-- ⚡ **Faster scans** — DNS lookups cached and time-boxed (network scan 181 s → 10 s),
-  per-binary YARA/hash caching, bounding of registry recursion
-- 🧹 **Robustness** — clean shutdown of scan threads, resource handles closed on
-  all paths, junction-safe file walking, no bare `except:`
+- 🗄️ **Quarantine action uses the encrypted vault** — files quarantined from a
+  detection can be restored from Tools → Quarantine; the old code moved them into
+  the PyInstaller temp directory, so they vanished when the app closed
+- ⚙️ **Scan settings are honoured** — the file, process, network and registry
+  checkboxes in Settings now actually enable/disable those checks
+- 🚦 **One scan at a time** — every scan button is disabled while a scan runs;
+  closing the window or dialog no longer destroys a running thread
+- 🧾 **Report fixes** — corrupted emoji removed, PDF fallback escapes `&`/`<`,
+  AI playbook HTML escaped, `--export` respects the requested path and
+  `--format text` is supported
+- 🛡️ **Failure handling** — malformed URLs, config values, whitelist dates and
+  quarantine failures produce clear verdicts instead of tracebacks; log/detection
+  exports are UTF-8; settings-save and report-export errors are shown, not fatal
+- 🔐 **Credential storage** — keyring deletion works with modern keyring versions
+  and falls back to DPAPI when the credential manager is unavailable
+- 🎯 **YARA** — the bundled rule set now compiles completely (two built-in files
+  had syntax errors); YARA is included in the release build
+- 🧪 **79 tests** — including a headless every-button UI test and a
+  failure-injection suite
 
 Full details: [CHANGELOG.md](CHANGELOG.md)
 

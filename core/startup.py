@@ -81,11 +81,23 @@ def parse_command(command: str) -> str:
     return match.group(1) if match else text.split(" ")[0]
 
 
-def classify_impact(signed: bool, publisher: str, path: str, source: str) -> Tuple[str, List[str]]:
+def classify_impact(
+    signed: bool,
+    publisher: str,
+    path: str,
+    source: str,
+    is_binary: bool = True,
+) -> Tuple[str, List[str]]:
     """Return (impact, reasons) for an entry, using only observable facts."""
     reasons: List[str] = []
     lowered = (path or "").lower()
     publisher_lower = (publisher or "").lower()
+
+    if not is_binary:
+        # Startup-folder shortcuts/scripts are not signed binaries; saying
+        # "not validly signed" for a .lnk file was misleading.
+        reasons.append("Runs from a Startup folder")
+        return "medium", reasons
 
     if not signed:
         reasons.append("Binary is not validly signed")
@@ -97,6 +109,9 @@ def classify_impact(signed: bool, publisher: str, path: str, source: str) -> Tup
     if not signed and any(marker in lowered for marker in USER_WRITABLE):
         return "high", reasons
     if not signed:
+        return "medium", reasons
+    if any(marker in lowered for marker in USER_WRITABLE):
+        # Even a signed binary launched from Downloads/AppData deserves a look.
         return "medium", reasons
     if source in ("service", "task") and not any(
         trusted in publisher_lower for trusted in TRUSTED_PUBLISHERS
@@ -177,7 +192,10 @@ def _enumerate_startup_folders() -> List[StartupEntry]:
                 info = verify_file(str(item)) if item.suffix.lower() in (".exe", ".dll") else None
                 signed = bool(info and info.is_valid)
                 publisher = info.signer if info else ""
-                impact, reasons = classify_impact(signed, publisher, str(item), "startup_folder")
+                impact, reasons = classify_impact(
+                    signed, publisher, str(item), "startup_folder",
+                    is_binary=item.suffix.lower() in (".exe", ".dll"),
+                )
                 entries.append(StartupEntry(
                     entry_id=f"folder:{item.name}", name=item.name,
                     command=str(item), source="startup_folder",

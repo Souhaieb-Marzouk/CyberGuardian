@@ -321,7 +321,8 @@ class ProcessScanner(BaseScanner):
                     flagged_pids.add(proc_info.pid)
 
                 # Deep analysis for high-priority or suspicious processes
-                if deep_analysis and self._memory_analyzer:
+                if (deep_analysis and self._memory_analyzer
+                        and self.config.config.scan.process_scan_memory):
                     if self._should_analyze_memory(proc_info, detections):
                         self._memory_analysis_count += 1
                         memory_detections = self._analyze_process_memory(
@@ -713,14 +714,18 @@ class ProcessScanner(BaseScanner):
                 proc_info.path and self.whitelist.is_trusted_path(proc_info.path):
             return detections
 
-        detection_methods = [
-            self._check_yara_rules,
-            self._check_behavioral_heuristics,
-            self._check_hash_reputation,
-            self._check_digital_signature,
+        detection_methods = [self._check_yara_rules]
+        settings = self.config.config.scan
+        if settings.process_scan_behavior:
+            detection_methods.append(self._check_behavioral_heuristics)
+        if settings.process_scan_hashes:
+            detection_methods.append(self._check_hash_reputation)
+        if settings.process_scan_signatures:
+            detection_methods.append(self._check_digital_signature)
+        detection_methods.extend([
             self._check_resource_usage,
             self._check_command_line,
-        ]
+        ])
         
         for method in detection_methods:
             if self.is_cancelled():

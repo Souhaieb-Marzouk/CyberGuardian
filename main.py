@@ -270,14 +270,17 @@ def run_cli_scan(args):
         if args.export:
             print(f"[*] Exporting report to: {args.export}")
             generator = ReportGenerator()
-            
+            output_path = Path(args.export)
+
             try:
                 if args.format == 'json':
-                    filepath = generator.export_json(results)
+                    filepath = generator.export_json(results, output=output_path)
                 elif args.format == 'pdf':
-                    filepath = generator.generate_pdf_report(results)
+                    filepath = generator.generate_pdf_report(results, output=output_path)
+                elif args.format == 'text':
+                    filepath = generator.generate_text_report(results, output=output_path)
                 else:
-                    filepath = generator.generate_html_report(results)
+                    filepath = generator.generate_html_report(results, output=output_path)
             except Exception as e:
                 print(f"    [!] Report export failed: {e}")
                 filepath = None
@@ -326,7 +329,16 @@ def run_realtime_monitor():
 def main():
     """Main entry point."""
     args = parse_arguments()
-    
+
+    # Apply an explicit configuration file before any scanner reads settings.
+    if args.config:
+        from utils.config import set_config_path
+        try:
+            set_config_path(args.config)
+        except Exception as e:
+            print(f"[!] Could not load configuration {args.config}: {e}")
+            return
+
     # Handle special commands
     if args.update_rules:
         from scanners.yara_manager import get_yara_manager

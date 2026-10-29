@@ -769,11 +769,12 @@ class NetworkScanner(BaseScanner):
         # Standard detection methods
         detection_methods = [
             self._check_suspicious_port,
-            self._check_threat_intelligence,
             self._check_suspicious_process,
             self._check_unusual_destination,
             self._check_listening_services,
         ]
+        if self.config.config.scan.network_threat_lookup:
+            detection_methods.insert(1, self._check_threat_intelligence)
         
         # Deep analysis detection methods
         if self._deep_analysis:

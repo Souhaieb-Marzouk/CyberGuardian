@@ -441,10 +441,13 @@ class RegistryScanner(BaseScanner):
         detection_methods = [
             self._check_suspicious_patterns,
             self._check_suspicious_paths,
-            self._check_yara_rules,
+        ]
+        if self.config.config.scan.registry_scan_yara:
+            detection_methods.append(self._check_yara_rules)
+        detection_methods.extend([
             self._check_entropy,
             self._check_service_hijacking,
-        ]
+        ])
         
         for method in detection_methods:
             try:
