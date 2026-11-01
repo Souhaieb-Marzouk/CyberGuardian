@@ -211,32 +211,71 @@ class ConfigManager:
         self._load_env_overrides()
     
     def _apply_config_dict(self, data: Dict[str, Any]) -> None:
-        """Apply dictionary values to config object."""
-        # Scan settings
-        if 'scan' in data:
-            for key, value in data['scan'].items():
-                if hasattr(self.config.scan, key):
-                    setattr(self.config.scan, key, value)
-        
-        # API settings
-        if 'api' in data:
-            for key, value in data['api'].items():
-                if hasattr(self.config.api, key):
-                    setattr(self.config.api, key, value)
-        
-        # UI settings
-        if 'ui' in data:
-            for key, value in data['ui'].items():
-                if hasattr(self.config.ui, key):
-                    setattr(self.config.ui, key, value)
-        
-        # Top-level settings
+        """Apply dictionary values to the config object.
+
+        Every value is coerced to the declared type of its field.  Values that
+        cannot be coerced are ignored, so a typo in YAML (``max_scan_threads:
+        eight``) never silently changes behaviour, and a malformed section
+        (``ui: not-a-dict``) does not discard the valid ones.
+        """
+        if not isinstance(data, dict):
+            return
+
+        def apply_section(target, values) -> None:
+            if not isinstance(values, dict):
+                return
+            for key, value in values.items():
+                if not hasattr(target, key):
+                    continue
+                ok, coerced = self._coerce_value(getattr(target, key), value)
+                if ok:
+                    setattr(target, key, coerced)
+
+        apply_section(self.config.scan, data.get('scan'))
+        apply_section(self.config.api, data.get('api'))
+        apply_section(self.config.ui, data.get('ui'))
+
         for key in ['auto_update_rules', 'rules_update_url', 'update_check_interval_hours',
                     'log_level', 'log_max_size_mb', 'log_backup_count',
                     'max_scan_threads', 'scan_timeout_seconds']:
-            if key in data:
-                setattr(self.config, key, data[key])
-    
+            if key in data and hasattr(self.config, key):
+                ok, coerced = self._coerce_value(getattr(self.config, key), data[key])
+                if ok:
+                    setattr(self.config, key, coerced)
+
+    @staticmethod
+    def _coerce_value(current: Any, value: Any):
+        """Return ``(accepted, value)`` for *value* given the current default."""
+        if isinstance(current, bool):
+            if isinstance(value, bool):
+                return True, value
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text in ('true', 'yes', 'on', '1'):
+                    return True, True
+                if text in ('false', 'no', 'off', '0'):
+                    return True, False
+            return False, None
+
+        if isinstance(current, int) and not isinstance(current, bool):
+            if isinstance(value, bool):
+                return False, None
+            if isinstance(value, int):
+                return True, value
+            if isinstance(value, float) and value.is_integer():
+                return True, int(value)
+            return False, None
+
+        if isinstance(current, float):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return True, float(value)
+            return False, None
+
+        if isinstance(current, str):
+            return (True, value) if isinstance(value, str) else (False, None)
+
+        return (True, value) if isinstance(value, type(current)) else (False, None)
+
     def _load_env_overrides(self) -> None:
         """Load configuration overrides from environment variables."""
         env_mappings = {
