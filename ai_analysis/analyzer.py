@@ -44,6 +44,42 @@ class Verdict(Enum):
     UNKNOWN = "unknown"
 
 
+def _loads_json_tolerant(text: str) -> Dict[str, Any]:
+    """Parse model output as JSON, repairing common formatting mistakes."""
+    import ast
+    import re as _re
+
+    candidates = [text]
+    # Raw control characters are illegal inside JSON strings.
+    candidates.append("".join(
+        ch for ch in text if ch in ("\n", "\t", "\r") or ord(ch) >= 32
+    ))
+    # Trailing commas before a closing brace or bracket.
+    candidates.append(_re.sub(r",\s*([}\]])", r"\1", candidates[-1]))
+
+    last_error: Exception = ValueError("empty response")
+    for candidate in candidates:
+        for strict in (True, False):
+            try:
+                return json.loads(candidate, strict=strict)
+            except Exception as exc:
+                last_error = exc
+
+    # Python-style dict (single quotes): only literals are rewritten.
+    normalized = candidates[-1]
+    normalized = _re.sub(r"\btrue\b", "True", normalized)
+    normalized = _re.sub(r"\bfalse\b", "False", normalized)
+    normalized = _re.sub(r"\bnull\b", "None", normalized)
+    try:
+        value = ast.literal_eval(normalized)
+        if isinstance(value, dict):
+            return value
+    except Exception as exc:
+        last_error = exc
+
+    raise ValueError(str(last_error))
+
+
 @dataclass
 class AnalysisResult:
     """Result of AI analysis."""
@@ -550,19 +586,11 @@ Respond ONLY with valid JSON. Be thorough and specific in your analysis."""
             else:
                 json_str = cleaned
             
-            # Parse JSON
-            try:
-                data = json.loads(json_str)
-            except json.JSONDecodeError:
-                # Try to fix common JSON issues
-                # Replace single quotes with double quotes (but not inside strings)
-                import re
-                # Fix unquoted keys
-                json_str = re.sub(r'(\w+)(?=\s*:)', r'"\1"', json_str)
-                # Fix single quotes
-                json_str = json_str.replace("'", '"')
-                # Try parsing again
-                data = json.loads(json_str)
+            # Parse JSON.  Models occasionally emit trailing commas, single
+            # quotes or raw newlines inside strings; repair those without
+            # rewriting the whole document (a global quote substitution used to
+            # corrupt apostrophes inside values such as "don't").
+            data = _loads_json_tolerant(json_str)
             
             # Map verdict string to enum
             verdict_map = {

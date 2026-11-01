@@ -321,8 +321,7 @@ class ProcessScanner(BaseScanner):
                     flagged_pids.add(proc_info.pid)
 
                 # Deep analysis for high-priority or suspicious processes
-                if (deep_analysis and self._memory_analyzer
-                        and self.config.config.scan.process_scan_memory):
+                if deep_analysis and self._memory_analyzer:
                     if self._should_analyze_memory(proc_info, detections):
                         self._memory_analysis_count += 1
                         memory_detections = self._analyze_process_memory(
@@ -667,7 +666,13 @@ class ProcessScanner(BaseScanner):
                 mem_bytes = mem_info.rss if mem_info else 0
                 
                 # Check whitelist
-                is_whitelisted = self.whitelist.is_whitelisted(name, 'name')
+                # A whitelisted path must suppress the binary even when its
+                # name is not whitelisted (the previous code only checked names,
+                # so adding an executable path in Settings had no effect).
+                is_whitelisted = (
+                    self.whitelist.is_whitelisted(name, 'name')
+                    or (bool(path) and self.whitelist.is_whitelisted(path, 'path'))
+                )
                 
                 proc_info = ProcessInfo(
                     pid=info['pid'],
@@ -700,8 +705,13 @@ class ProcessScanner(BaseScanner):
         """Run all detection checks on a process."""
         detections = []
 
-        # A whitelisted *path* or hash is trustworthy.  A whitelisted *name*
-        # alone is not: malware routinely masquerades as lsass.exe/svchost.exe.
+        # An explicitly whitelisted path is trusted, regardless of where it
+        # lives.  A whitelisted *name* alone is not: malware routinely
+        # masquerades as lsass.exe/svchost.exe.
+        if proc_info.path and self.whitelist.is_whitelisted(proc_info.path, 'path'):
+            self.logger.debug(f"Skipping whitelisted path: {proc_info.path}")
+            return detections
+
         if proc_info.is_whitelisted and proc_info.path and \
                 self.whitelist.is_trusted_path(proc_info.path):
             self.logger.debug(f"Skipping trusted system binary: {proc_info.path}")
@@ -714,18 +724,14 @@ class ProcessScanner(BaseScanner):
                 proc_info.path and self.whitelist.is_trusted_path(proc_info.path):
             return detections
 
-        detection_methods = [self._check_yara_rules]
-        settings = self.config.config.scan
-        if settings.process_scan_behavior:
-            detection_methods.append(self._check_behavioral_heuristics)
-        if settings.process_scan_hashes:
-            detection_methods.append(self._check_hash_reputation)
-        if settings.process_scan_signatures:
-            detection_methods.append(self._check_digital_signature)
-        detection_methods.extend([
+        detection_methods = [
+            self._check_yara_rules,
+            self._check_behavioral_heuristics,
+            self._check_hash_reputation,
+            self._check_digital_signature,
             self._check_resource_usage,
             self._check_command_line,
-        ])
+        ]
         
         for method in detection_methods:
             if self.is_cancelled():
