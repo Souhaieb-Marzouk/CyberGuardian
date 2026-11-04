@@ -124,3 +124,7 @@ ui/design3.py
 ui/design4.py
 docs/design/design3-command-center.png
 docs/design/design4-studio.png
+
+# Generated at runtime by the bundled YARA rules
+yara_rules/
+

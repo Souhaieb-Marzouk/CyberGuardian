@@ -104,6 +104,12 @@ class ScanConfig:
     eventlog_enabled: bool = True
     eventlog_lookback_hours: int = 24
 
+    # Online hash reputation (VirusTotal) is rate limited; opt-in only.
+    online_reputation: bool = False
+
+    # Persisted default for the "deep analysis" option.
+    deep_analysis: bool = False
+
 
 @dataclass
 class APIConfig:

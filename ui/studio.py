@@ -22,6 +22,8 @@ from PyQt5.QtWidgets import (
 )
 
 from ui.design_common import Bars, Gauge, load_fonts, micro
+from ui.findings import FindingDialog, FindingsPage
+from ui.canaries import CanariesPage, CanaryReportDialog
 
 # ---------------------------------------------------------------------------
 # Themes
@@ -129,10 +131,11 @@ class ScanWorker(QThread):
     finished_scan = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, scanner, target=None):
+    def __init__(self, scanner, target=None, deep: bool = False):
         super().__init__()
         self.scanner = scanner
         self.target = target
+        self.deep = deep
 
     def run(self):
         try:
@@ -141,7 +144,11 @@ class ScanWorker(QThread):
                 lambda c, total, m: self.progress.emit(c, total, m)
             )
             self.scanner.set_detection_callback(self.detection.emit)
-            self.finished_scan.emit(self.scanner.scan(self.target))
+            import inspect
+            if self.deep and "deep_analysis" in inspect.signature(self.scanner.scan).parameters:
+                self.finished_scan.emit(self.scanner.scan(self.target, deep_analysis=True))
+            else:
+                self.finished_scan.emit(self.scanner.scan(self.target))
         except Exception as exc:  # pragma: no cover
             self.failed.emit(str(exc))
 
@@ -158,8 +165,12 @@ class ScanPage(QWidget):
         super().__init__()
         self.t, self.factory, self.needs_target = t, factory, needs_target
         self.shell = shell
+        self.title_text = title
+        self.description = description
         self.worker: Optional[ScanWorker] = None
         self.target = None
+        self.detections = []
+        self.result = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 26, 36, 30)
@@ -175,6 +186,14 @@ class ScanPage(QWidget):
         self.run_btn.setObjectName("primary")
         self.run_btn.clicked.connect(self.start)
         actions.addWidget(self.run_btn)
+
+        self.detail_btn = QPushButton("View details")
+        self.detail_btn.clicked.connect(self._open_details)
+        actions.addWidget(self.detail_btn)
+
+        self.export_btn = QPushButton("Export results")
+        self.export_btn.clicked.connect(self._export)
+        actions.addWidget(self.export_btn)
         self.state = QLabel("Ready when you are.")
         self.state.setStyleSheet(f"color: {t['muted']}; font-size: 12px;")
         actions.addWidget(self.state, 1)
@@ -190,6 +209,7 @@ class ScanPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.doubleClicked.connect(self._open_details)
         layout.addWidget(self.table, 1)
 
     def start(self):
@@ -201,13 +221,21 @@ class ScanPage(QWidget):
                 return
             self.target = path
         self.table.setRowCount(0)
+        self.detections = []
+        self.result = None
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self.run_btn.setEnabled(False)
         self.state.setText("Scanning…")
         if self.shell:
             self.shell.set_busy(True)
-        self.worker = ScanWorker(self.factory(), self.target)
+        deep = False
+        try:
+            from utils.config import get_config
+            deep = bool(get_config().config.scan.deep_analysis)
+        except Exception:
+            deep = False
+        self.worker = ScanWorker(self.factory(), self.target, deep=deep)
         self.worker.progress.connect(self._progress)
         self.worker.detection.connect(self._detection)
         self.worker.finished_scan.connect(self._finished)
@@ -220,7 +248,33 @@ class ScanPage(QWidget):
             self.progress.setValue(current)
         self.state.setText(message[:120])
 
+    def _export(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from reporting.export import export_results
+
+        if self.result is None or not self.result.detections:
+            QMessageBox.information(self, "Export", "Run a scan with findings first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export scan results", f"{self.title_text.lower()}_findings.csv",
+            "CSV (*.csv);;JSON (*.json)",
+        )
+        if not path:
+            return
+        try:
+            written = export_results([self.result], path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        QMessageBox.information(self, "Export", f"Saved {len(self.result.detections)} finding(s) to:\n{written}")
+
+    def _open_details(self, *_):
+        row = self.table.currentRow()
+        if 0 <= row < len(self.detections):
+            FindingDialog(self.t, self.detections[row], self).exec_()
+
     def _detection(self, detection):
+        self.detections.append(detection)
         row = self.table.rowCount()
         self.table.insertRow(row)
         risk = detection.risk_level.value
@@ -233,6 +287,7 @@ class ScanPage(QWidget):
             self.table.setItem(row, column, item)
 
     def _finished(self, result):
+        self.result = result
         self.run_btn.setEnabled(True)
         self.progress.setVisible(False)
         self.state.setText(
@@ -257,6 +312,7 @@ class OverviewPage(QWidget):
     def __init__(self, t: Dict, shell):
         super().__init__()
         self.t, self.shell = t, shell
+        from utils.config import get_config
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -367,6 +423,7 @@ class OverviewPage(QWidget):
         self.checked_box = QVBoxLayout()
         self.checked_box.setSpacing(0)
         checked.body.addLayout(self.checked_box)
+        self.checked_marks = {}
         for text in ("Startup programs and services", "Running processes and signatures",
                      "Windows event logs", "Installed software", "Network connections"):
             self._checked_row(text, False)
@@ -384,6 +441,7 @@ class OverviewPage(QWidget):
         mark = QLabel("✓" if done else "○")
         mark.setStyleSheet(f"color: {self.t['accent'] if done else self.t['muted']};")
         line.addWidget(mark)
+        self.checked_marks[text] = mark
         item = QLabel(text)
         item.setStyleSheet(f"color: {self.t['ink'] if done else self.t['muted']}; font-size: 12px;")
         line.addWidget(item, 1)
@@ -494,6 +552,8 @@ class ScansPage(QWidget):
 class ToolsPage(QWidget):
     def __init__(self, t: Dict, shell):
         super().__init__()
+        self.t = t
+        self.shell = shell
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 26, 36, 30)
         layout.setSpacing(16)
@@ -575,6 +635,7 @@ class SettingsPage(QWidget):
     def __init__(self, t: Dict, shell):
         super().__init__()
         self.t, self.shell = t, shell
+        from utils.config import get_config
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 26, 36, 30)
         layout.setSpacing(16)
@@ -603,12 +664,32 @@ class SettingsPage(QWidget):
             f"color: {t['ink']}; font-size: 15px; font-weight: 700;"
         )
         self.deep = QCheckBox("Enable deep analysis on supported scans")
+        self.deep.setChecked(bool(get_config().config.scan.deep_analysis))
+        self.deep.toggled.connect(self._toggle_deep)
         engine.body.addWidget(self.deep)
+
+        from utils.config import get_config
+        self.online = QCheckBox("Check hashes with VirusTotal (slower, needs API key)")
+        self.online.setChecked(bool(get_config().config.scan.online_reputation))
+        self.online.toggled.connect(self._toggle_online)
+        engine.body.addWidget(self.online)
         open_settings = QPushButton("Open advanced settings (API keys, whitelist, YARA)")
         open_settings.clicked.connect(shell.open_advanced_settings)
         engine.body.addWidget(open_settings, 0, Qt.AlignLeft)
         layout.addWidget(engine)
         layout.addStretch(1)
+
+    def _toggle_deep(self, enabled: bool):
+        from utils.config import get_config
+        config = get_config()
+        config.set("scan.deep_analysis", bool(enabled))
+        config.save()
+
+    def _toggle_online(self, enabled: bool):
+        from utils.config import get_config
+        config = get_config()
+        config.set("scan.online_reputation", bool(enabled))
+        config.save()
 
 
 # ---------------------------------------------------------------------------
@@ -643,12 +724,18 @@ class StudioWindow(QMainWindow):
         self.tools = ToolsPage(self.t, self)
         self.logs = LogsPage(self.t)
         self.settings = SettingsPage(self.t, self)
+        self.findings_page = FindingsPage(self.t, self)
+        self.canaries = CanariesPage(self.t, self)
         for key, widget in (("Overview", self.overview), ("Scans", self.scans),
+                            ("Findings", self.findings_page), ("Canaries", self.canaries),
                             ("Tools", self.tools), ("Logs", self.logs),
                             ("Settings", self.settings)):
             self.pages[key] = widget
             self.stack.addWidget(widget)
 
+        self.all_findings = []
+        self.canaries.events_detected.connect(self._on_canary_events)
+        self._setup_tray()
         self.statusBar().showMessage("Ready")
         self.go_to(page)
         self.refresh_overview()
@@ -673,7 +760,7 @@ class StudioWindow(QMainWindow):
         layout.addSpacing(14)
 
         self.nav_buttons = {}
-        for key in ("Overview", "Scans", "Tools", "Logs"):
+        for key in ("Overview", "Scans", "Findings", "Canaries", "Tools", "Logs"):
             button = QPushButton(key)
             button.setObjectName("pill")
             button.setCheckable(True)
@@ -711,8 +798,14 @@ class StudioWindow(QMainWindow):
         QSettings("CyberGuardian", "CyberGuardian").setValue("ui/theme", target)
         current = self.stack.currentWidget()
         page_key = next((key for key, page in self.pages.items() if page is current), "Overview")
+        geometry = self.saveGeometry()
+        maximised = self.isMaximized()
         replacement = StudioWindow(target, self.results, page_key)
         replacement.show()
+        if maximised:
+            replacement.showMaximized()
+        else:
+            replacement.restoreGeometry(geometry)
         self.close()
 
     def quick_check(self):
@@ -723,9 +816,27 @@ class StudioWindow(QMainWindow):
     def set_busy(self, busy: bool):
         self.statusBar().showMessage("Scanning…" if busy else "Ready")
 
+    SCAN_TO_CHECK = {
+        "process": "Running processes and signatures",
+        "registry": "Startup programs and services",
+        "eventlog": "Windows event logs",
+        "file": "Files and downloads",
+        "network": "Network connections",
+    }
+
     def on_scan_done(self, result):
+        item = self.SCAN_TO_CHECK.get(getattr(result, "scan_type", ""))
+        mark = self.overview.checked_marks.get(item) if item else None
+        if mark is not None:
+            mark.setText("✓")
+            mark.setStyleSheet(f"color: {self.t['accent']};")
+
         self.results.append(result)
         self.findings.extend(result.detections)
+        for detection in result.detections:
+            self.all_findings.append((result.scan_type.title(), detection))
+        self.findings_page.set_detections(self.all_findings)
+
         self.logs.append(
             f"{result.scan_type}: {result.total_items} items, {len(result.detections)} findings"
         )
@@ -751,7 +862,97 @@ class StudioWindow(QMainWindow):
         items = sum(result.total_items for result in self.results)
         self.overview.stat_values["items"].setText(f"{items:,}".replace(",", " "))
         self.overview.stat_values["findings"].setText(str(len(self.findings)))
+
+        events = sum(r.total_items for r in self.results if getattr(r, "scan_type", "") == "eventlog")
+        if events:
+            self.overview.stat_values["events"].setText(f"{events:,}".replace(",", " "))
+        if getattr(self, "_app_count", None) is None:
+            try:
+                from core.software import get_installed_software
+                self._app_count = len(get_installed_software())
+            except Exception:
+                self._app_count = 0
+        if self._app_count:
+            self.overview.stat_values["apps"].setText(str(self._app_count))
         self.overview.set_findings(self.findings)
+
+    # ------------------------------------------------------------ canary alerts
+    def _setup_tray(self):
+        try:
+            self.tray = QSystemTrayIcon(
+                self.style().standardIcon(QStyle.SP_ComputerIcon), self
+            )
+            self.tray.setToolTip("CyberGuardian · ransomware canaries armed")
+            self.tray.show()
+        except Exception:
+            self.tray = None
+
+    def _on_canary_events(self, events):
+        if not events or getattr(self, "_canary_alert_open", False):
+            return
+        self._canary_alert_open = True
+        first = events[0]
+        location = first.renamed_to or first.path
+        if self.tray is not None:
+            self.tray.showMessage(
+                "Possible ransomware activity",
+                f"{first.name}\n{location}",
+                QSystemTrayIcon.Warning,
+                15000,
+            )
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Critical)
+        box.setWindowTitle("Canary alert")
+        box.setText(f"<b>{first.name}</b> was {first.kind}.")
+        box.setInformativeText(
+            f"Location: {location}\n"
+            f"Detected: {first.detected_at[:19].replace('T', ' ')}\n\n"
+            f"{first.guidance[0]}"
+        )
+        open_btn = box.addButton("Open report", QMessageBox.AcceptRole)
+        box.addButton("Dismiss", QMessageBox.RejectRole)
+        try:
+            box.exec_()
+            if box.clickedButton() is open_btn:
+                self.go_to("Canaries")
+                CanaryReportDialog(self.t, first, self).exec_()
+        finally:
+            self._canary_alert_open = False
+
+    def closeEvent(self, event):
+        try:
+            QSettings("CyberGuardian", "CyberGuardian").setValue("ui/geometry", self.saveGeometry())
+            QSettings("CyberGuardian", "CyberGuardian").setValue("ui/maximised", self.isMaximized())
+        except Exception:
+            pass
+        try:
+            self.canaries.shutdown()
+            if getattr(self, "tray", None) is not None:
+                self.tray.hide()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    def export_all_results(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from reporting.export import export_results
+
+        if not self.results:
+            QMessageBox.information(self, "Export", "No scan results to export yet.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export all results", "cyberguardian_findings.csv",
+            "CSV (*.csv);;JSON (*.json)",
+        )
+        if not path:
+            return
+        try:
+            written = export_results(self.results, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        total = sum(len(result.detections) for result in self.results)
+        QMessageBox.information(self, "Export", f"Saved {total} finding(s) to:\n{written}")
 
     def open_advanced_settings(self):
         from ui.main_window import SettingsDialog
@@ -763,4 +964,13 @@ def run() -> int:
     theme = QSettings("CyberGuardian", "CyberGuardian").value("ui/theme", "light")
     window = StudioWindow(str(theme))
     window.show()
+    try:
+        settings = QSettings("CyberGuardian", "CyberGuardian")
+        geometry = settings.value("ui/geometry")
+        if geometry:
+            window.restoreGeometry(geometry)
+        if settings.value("ui/maximised", False, type=bool):
+            window.showMaximized()
+    except Exception:
+        pass
     return app.exec_()

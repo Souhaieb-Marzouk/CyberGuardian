@@ -1505,7 +1505,14 @@ class FileScanner(BaseScanner):
         if not file_info.sha256:
             return detections
         
-        hash_result = self.threat_intel.lookup_hash(file_info.sha256, use_online=True)
+        online_enabled = False
+        try:
+            online_enabled = bool(get_config().config.scan.online_reputation)
+        except Exception:
+            pass
+        hash_result = self.threat_intel.lookup_hash(
+            file_info.sha256, use_online=online_enabled
+        )
         
         if hash_result.is_malicious and hash_result.confidence in ['high', 'medium']:
             risk_level = RiskLevel.CRITICAL if hash_result.confidence == 'high' else RiskLevel.HIGH
