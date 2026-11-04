@@ -114,3 +114,13 @@ config/
 reports/
 cache/
 yara_rules/*.yar
+
+# Local design studies (not shipped)
+main_v2.py
+main_d3.py
+main_d4.py
+ui/shell.py
+ui/design3.py
+ui/design4.py
+docs/design/design3-command-center.png
+docs/design/design4-studio.png
