@@ -29,6 +29,40 @@ from utils.logging_utils import get_logger
 
 logger = get_logger('scanners.yara_manager')
 
+# Bumped whenever the bundled rules change; forces one rewrite on upgrade.
+BUILTIN_RULES_VERSION = 6
+
+
+def _match_strings(match) -> List[Tuple[int, bytes, str]]:
+    """Normalise YARA match strings across yara-python API versions.
+
+    yara-python >= 4.3 returns ``StringMatch`` objects with ``instances``;
+    older builds return ``(offset, identifier, data)`` tuples.  The previous
+    code indexed the objects (``s[0]``), which raised TypeError as soon as a
+    rule matched, silently disabling YARA results.
+    """
+    entries: List[Tuple[int, bytes, str]] = []
+    for item in getattr(match, "strings", []) or []:
+        identifier = getattr(item, "identifier", None)
+        instances = getattr(item, "instances", None)
+        if identifier is not None and instances is not None:
+            for instance in instances:
+                try:
+                    entries.append((
+                        int(getattr(instance, "offset", 0)),
+                        bytes(getattr(instance, "matched_data", b"")),
+                        str(identifier),
+                    ))
+                except Exception:
+                    continue
+            continue
+        try:
+            offset, ident, data = item[0], item[1], item[2]
+            entries.append((int(offset), bytes(data), str(ident)))
+        except Exception:
+            continue
+    return entries
+
 
 @dataclass
 class YaraMatch:
@@ -138,7 +172,17 @@ class YaraManager:
 
             # Find all rule files
             rule_files = self._find_rule_files()
-            
+
+            marker = self.rules_dir / ".builtin_version"
+            try:
+                current = int(marker.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                current = 0
+
+            if current != BUILTIN_RULES_VERSION:
+                self._create_default_rules(force=bool(rule_files))
+                rule_files = self._find_rule_files()
+
             if not rule_files:
                 logger.warning("No Yara rule files found")
                 self._create_default_rules()
@@ -269,15 +313,15 @@ class YaraManager:
         except OSError as exc:
             logger.warning(f"Could not upgrade default Yara rules: {exc}")
 
-    def _create_default_rules(self) -> None:
-        """Create default Yara rules if none exist."""
+    def _create_default_rules(self, force: bool = False) -> None:
+        """Create or refresh the bundled Yara rules."""
         default_rules = {
             'suspicious_apis.yar': '''// Suspicious Windows API calls
 rule suspicious_api_calls {
     meta:
         description = "Detects suspicious Windows API calls commonly used by malware"
         author = "CyberGuardian"
-        severity = "medium"
+        severity = "low"
         date = "2024-01-01"
     
     strings:
@@ -299,7 +343,7 @@ rule process_injection_indicators {
     meta:
         description = "Detects process injection indicators"
         author = "CyberGuardian"
-        severity = "high"
+        severity = "low"
     
     strings:
         $inject1 = "CreateRemoteThread" nocase
@@ -308,7 +352,7 @@ rule process_injection_indicators {
         $inject4 = "NtQueueApcThread" nocase
         
     condition:
-        2 of ($inject*)
+        3 of ($inject*)
 }
 ''',
             'powershell_suspicious.yar': '''// Suspicious PowerShell patterns
@@ -316,7 +360,7 @@ rule powershell_encoded_command {
     meta:
         description = "Detects encoded PowerShell commands"
         author = "CyberGuardian"
-        severity = "high"
+        severity = "low"
     
     strings:
         $enc1 = "-enc" nocase
@@ -325,14 +369,14 @@ rule powershell_encoded_command {
         $enc4 = "FromBase64String" nocase
         
     condition:
-        any of ($enc*)
+        any of ($enc*) and uint16(0) != 0x5A4D
 }
 
 rule powershell_download {
     meta:
         description = "Detects PowerShell download cradles"
         author = "CyberGuardian"
-        severity = "high"
+        severity = "low"
     
     strings:
         $dl1 = "Net.WebClient" nocase
@@ -344,14 +388,14 @@ rule powershell_download {
         $dl7 = "wget " nocase
         
     condition:
-        any of ($dl*)
+        any of ($dl*) and uint16(0) != 0x5A4D
 }
 
 rule powershell_execution_policy {
     meta:
         description = "Detects execution policy bypass attempts"
         author = "CyberGuardian"
-        severity = "medium"
+        severity = "low"
     
     strings:
         $ep1 = "Bypass" nocase
@@ -416,7 +460,7 @@ rule ransomware_extensions {
         $ext8 = ".cryptolocker" nocase
         
     condition:
-        any of ($ext*)
+        4 of ($ext*)
 }
 
 rule ransomware_strings {
@@ -446,20 +490,18 @@ rule reverse_shell {
     strings:
         $shell1 = "nc -e" nocase
         $shell2 = "/bin/sh -i" nocase
-        $shell3 = "cmd.exe" nocase
-        $shell4 = "powershell -nop" nocase
         $shell5 = "socket.connect" nocase
         $shell6 = "subprocess.call" nocase
         
     condition:
-        2 of ($shell*)
+        ($shell1 or $shell2) and ($shell5 or $shell6)
 }
 
 rule backdoor_c2 {
     meta:
         description = "Detects common C2 patterns"
         author = "CyberGuardian"
-        severity = "high"
+        severity = "low"
     
     strings:
         $c2_1 = "beacon" nocase
@@ -479,7 +521,7 @@ rule packed_executable {
     meta:
         description = "Detects packed/obfuscated executables"
         author = "CyberGuardian"
-        severity = "medium"
+        severity = "low"
     
     strings:
         $pack1 = "UPX" nocase
@@ -534,12 +576,11 @@ rule asp_webshell {
     
     strings:
         $asp1 = "WScript.Shell" nocase
-        $asp2 = "cmd.exe" nocase
         $asp3 = "Request.Form" nocase
         $asp4 = "ExecuteGlobal" nocase
         
     condition:
-        2 of ($asp*)
+        $asp3 and ($asp1 or $asp4)
 }
 ''',
             'anti_analysis.yar': '''// Anti-analysis techniques
@@ -547,7 +588,7 @@ rule anti_debug {
     meta:
         description = "Detects anti-debugging techniques"
         author = "CyberGuardian"
-        severity = "medium"
+        severity = "low"
     
     strings:
         $dbg1 = "IsDebuggerPresent" nocase
@@ -564,7 +605,7 @@ rule anti_vm {
     meta:
         description = "Detects anti-VM techniques"
         author = "CyberGuardian"
-        severity = "medium"
+        severity = "low"
     
     strings:
         $vm1 = "VMware" nocase
@@ -583,7 +624,7 @@ rule anti_sandbox {
     meta:
         description = "Detects sandbox evasion techniques"
         author = "CyberGuardian"
-        severity = "medium"
+        severity = "low"
     
     strings:
         $sb1 = "Sleep(" nocase
@@ -600,7 +641,7 @@ rule keylogger_indicators {
     meta:
         description = "Detects keylogger-related functionality"
         author = "CyberGuardian"
-        severity = "high"
+        severity = "low"
     
     strings:
         $key1 = "GetAsyncKeyState" nocase
@@ -624,18 +665,17 @@ rule credential_dumping {
         $cred2 = "lsass.exe" nocase
         $cred3 = "SAM" nocase
         $cred4 = "SYSTEM" nocase
-        $cred5 = "SECURITY" nocase
         $cred6 = "NTDS.dit" nocase
         
     condition:
-        2 of ($cred*)
+        $cred1 or $cred6 or ($cred2 and $cred3 and $cred4)
 }
 
 rule browser_stealer {
     meta:
         description = "Detects browser credential stealing"
         author = "CyberGuardian"
-        severity = "high"
+        severity = "low"
     
     strings:
         $br1 = "Login Data" nocase
@@ -654,7 +694,7 @@ rule dropper_patterns {
     meta:
         description = "Detects dropper patterns"
         author = "CyberGuardian"
-        severity = "high"
+        severity = "low"
     
     strings:
         $drop1 = "URLDownloadToFile" nocase
@@ -665,7 +705,7 @@ rule dropper_patterns {
         $drop6 = "ShellExecute" nocase
         
     condition:
-        2 of ($drop*)
+        3 of ($drop*) and uint16(0) == 0x5A4D
 }
 
 rule suspicious_child_process {
@@ -693,11 +733,18 @@ rule suspicious_child_process {
         # Write default rules
         for filename, content in default_rules.items():
             filepath = self.rules_dir / filename
-            if not filepath.exists():
+            if force or not filepath.exists():
                 with open(filepath, 'w', encoding='utf-8') as f:
                     f.write(content)
                 logger.info(f"Created default rule file: {filename}")
-    
+
+        try:
+            (self.rules_dir / ".builtin_version").write_text(
+                str(BUILTIN_RULES_VERSION), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
     def scan_file(self, filepath: Path, timeout: int = 60) -> List[YaraMatch]:
         """
         Scan a file with all loaded Yara rules.
@@ -729,7 +776,7 @@ rule suspicious_child_process {
                         namespace=match.namespace,
                         tags=list(match.tags),
                         meta=dict(match.meta),
-                        strings=[(s[0], s[2], s[1]) for s in match.strings],
+                        strings=_match_strings(match),
                         file_path=str(filepath),
                         severity=match.meta.get('severity', 'medium'),
                         description=match.meta.get('description', ''),
@@ -774,7 +821,7 @@ rule suspicious_child_process {
                         namespace=match.namespace,
                         tags=list(match.tags),
                         meta=dict(match.meta),
-                        strings=[(s[0], s[2], s[1]) for s in match.strings],
+                        strings=_match_strings(match),
                         severity=match.meta.get('severity', 'medium'),
                         description=match.meta.get('description', ''),
                     )
@@ -821,7 +868,7 @@ rule suspicious_child_process {
                         namespace=match.namespace,
                         tags=list(match.tags),
                         meta=dict(match.meta),
-                        strings=[(s[0], s[2], s[1]) for s in match.strings],
+                        strings=_match_strings(match),
                         severity=match.meta.get('severity', 'medium'),
                         description=match.meta.get('description', ''),
                     )

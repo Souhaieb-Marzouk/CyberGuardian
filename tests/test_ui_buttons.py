@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 from PyQt5.QtCore import Qt
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QMessageBox, QPushButton,
+    QApplication, QDialog, QFileDialog, QMessageBox, QPushButton, QTableWidget,
 )
 
 import psutil
@@ -125,9 +125,12 @@ class FakeMonitor:
 
 
 def buttons(widget):
+    # Cell widgets (the per-row "Update" action) depend on what is installed
+    # and on winget being available; they are covered by the software tests
+    # instead of the generic click sweep.
     return [
         b for b in widget.findChildren(QPushButton)
-        if b.objectName() != "qt_configureButton" and b.window() is widget
+        if b.objectName() not in ("qt_configureButton", "rowAction") and b.window() is widget
     ]
 
 
@@ -148,7 +151,7 @@ class ButtonTests(unittest.TestCase):
             "subprocess": mw.subprocess,
             "secure_storage": mw.get_secure_storage,
             "load_keys": mw.load_all_api_keys,
-            "canary_dirs": __import__("core.canary", fromlist=["CanaryManager"]).CanaryManager._target_directories,
+            "canary_root": __import__("core.canary", fromlist=["CanaryManager"]).CanaryManager._root,
             "set_enabled": td.set_enabled,
             "process": psutil.Process,
             "show_admin": mw.MainWindow._show_admin_warning,
@@ -178,7 +181,7 @@ class ButtonTests(unittest.TestCase):
         cls.canary_dir = ROOT / "tests" / "_tmp_ui_canary"
         shutil.rmtree(cls.canary_dir, ignore_errors=True)
         cls.canary_dir.mkdir(parents=True)
-        canary.CanaryManager._target_directories = staticmethod(lambda: [cls.canary_dir])
+        canary.CanaryManager._root = lambda self, name: cls.canary_dir
         td.set_enabled = lambda entry, enabled: True
 
         cls.saved_scans = {
@@ -224,7 +227,7 @@ class ButtonTests(unittest.TestCase):
             td.set_enabled = cls.saved["set_enabled"]
             from core.canary import CanaryManager
 
-            CanaryManager._target_directories = staticmethod(cls.saved["canary_dirs"])
+            CanaryManager._root = cls.saved["canary_root"]
             mw.ProcessScanner.scan = cls.saved_scans["ProcessScanner"]
             mw.FileScanner.scan = cls.saved_scans["FileScanner"]
             mw.RegistryScanner.scan = cls.saved_scans["RegistryScanner"]
