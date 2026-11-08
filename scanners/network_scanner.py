@@ -24,6 +24,7 @@ import threading
 from collections import defaultdict
 import ipaddress
 
+from scanners.evidence import merge_evidence, connection_payload
 from scanners.base_scanner import (
     BaseScanner, ScanResult, ScanStatus, Detection, RiskLevel
 )
@@ -279,7 +280,9 @@ class NetworkScanner(BaseScanner):
                 
                 # Run detections
                 detections = self._analyze_connection(conn)
-                
+                for detection in detections:
+                    merge_evidence(detection, "connection", connection_payload(conn))
+
                 for detection in detections:
                     result.add_detection(detection)
                     self._report_detection(detection)
@@ -302,7 +305,9 @@ class NetworkScanner(BaseScanner):
                 result.stats['warning'] = self.scan_warning
                 self.logger.warning(self.scan_warning)
 
-            result.status = ScanStatus.COMPLETED
+            if result.status != ScanStatus.CANCELLED:
+
+                result.status = ScanStatus.COMPLETED
             
         except Exception as e:
             self.logger.error(f"Network scan error: {e}")

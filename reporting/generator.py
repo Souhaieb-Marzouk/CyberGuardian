@@ -17,6 +17,7 @@ import base64
 from scanners.base_scanner import ScanResult, Detection, RiskLevel
 from utils.config import REPORTS_DIR, get_config
 from utils.logging_utils import get_logger
+from core import branding
 
 logger = get_logger('reporting.generator')
 
@@ -421,6 +422,7 @@ class ReportGenerator:
             <h1>&#128737;&#65039; {esc(title)}</h1>
             <div class="subtitle">Comprehensive Security Analysis Report</div>
             <div class="timestamp">Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</div>
+    <div class="timestamp">Designed &amp; architected by {branding.AUTHOR} · {branding.COPYRIGHT} · {branding.GITHUB_URL}</div>
         </div>
         '''
     
@@ -615,6 +617,7 @@ class ReportGenerator:
         <div class="footer">
             <p>CyberGuardian Security Scanner v{self.config.config.version}</p>
             <p>Report generated at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+<p>Designed &amp; architected by {branding.AUTHOR} · {branding.COPYRIGHT} · {branding.GITHUB_URL}</p>
         </div>
         '''
     
@@ -721,6 +724,8 @@ class ReportGenerator:
             title,
             "=" * len(title),
             f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"Designed & architected by {branding.AUTHOR} · {branding.COPYRIGHT}",
+            f"Project: {branding.GITHUB_URL}",
             f"Version:   {self.config.config.version}",
             "",
             f"Items scanned: {total_items}",

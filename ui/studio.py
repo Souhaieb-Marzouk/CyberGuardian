@@ -24,6 +24,9 @@ from PyQt5.QtWidgets import (
 from ui.design_common import Bars, Gauge, load_fonts, micro
 from ui.findings import FindingDialog, FindingsPage
 from ui.canaries import CanariesPage, CanaryReportDialog
+from ui.about import AboutDialog
+from core import branding
+from utils.i18n import LANGUAGES, current_language, load_language, set_language, tr
 
 # ---------------------------------------------------------------------------
 # Themes
@@ -175,26 +178,31 @@ class ScanPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 26, 36, 30)
         layout.setSpacing(16)
-        layout.addWidget(micro(title, t["muted"]))
+        layout.addWidget(micro(tr("scan.page." + title.lower()), t["muted"]))
         heading = QLabel(description)
         heading.setWordWrap(True)
         heading.setStyleSheet(f"color: {t['ink']}; font-size: 26px; font-weight: 700;")
         layout.addWidget(heading)
 
         actions = QHBoxLayout()
-        self.run_btn = QPushButton("Run scan")
+        self.run_btn = QPushButton(tr("scan.run"))
         self.run_btn.setObjectName("primary")
         self.run_btn.clicked.connect(self.start)
         actions.addWidget(self.run_btn)
 
-        self.detail_btn = QPushButton("View details")
+        self.stop_btn = QPushButton(tr("scan.stop"))
+        self.stop_btn.clicked.connect(self.stop)
+        self.stop_btn.setVisible(False)
+        actions.addWidget(self.stop_btn)
+
+        self.detail_btn = QPushButton(tr("scan.details"))
         self.detail_btn.clicked.connect(self._open_details)
         actions.addWidget(self.detail_btn)
 
-        self.export_btn = QPushButton("Export results")
+        self.export_btn = QPushButton(tr("scan.export"))
         self.export_btn.clicked.connect(self._export)
         actions.addWidget(self.export_btn)
-        self.state = QLabel("Ready when you are.")
+        self.state = QLabel(tr("scan.ready"))
         self.state.setStyleSheet(f"color: {t['muted']}; font-size: 12px;")
         actions.addWidget(self.state, 1)
         layout.addLayout(actions)
@@ -203,20 +211,111 @@ class ScanPage(QWidget):
         self.progress.setVisible(False)
         layout.addWidget(self.progress)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Risk", "Finding", "Indicator", "Confidence"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.columns = self._columns_for(title)
+        self.table = QTableWidget(0, len(self.columns))
+        self.table.setHorizontalHeaderLabels([header for header, _ in self.columns])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.doubleClicked.connect(self._open_details)
         layout.addWidget(self.table, 1)
 
+    @staticmethod
+    def _columns_for(title):
+        def risk(detection):
+            return detection.risk_level.value.upper()
+
+        def confidence(detection):
+            return f"{detection.confidence:.0%}"
+
+        def process(detection):
+            evidence = detection.evidence if isinstance(detection.evidence, dict) else {}
+            return evidence.get("process") or {}
+
+        def rules(detection):
+            evidence = detection.evidence if isinstance(detection.evidence, dict) else {}
+            matches = evidence.get("yara_matches") or []
+            return ", ".join(str(m.get("rule", "")) for m in matches[:3])
+
+        def pid(detection):
+            return detection.process_id or process(detection).get("pid", "")
+
+        def ppid(detection):
+            return process(detection).get("ppid", "")
+
+        def name(detection):
+            return detection.process_name or process(detection).get("name", "")
+
+        def user(detection):
+            return detection.user or process(detection).get("user", "")
+
+        def path(detection):
+            return detection.file_path or process(detection).get("path", "")
+
+        if title == "Processes":
+            return [
+                (tr("col.risk"), risk), (tr("col.process"), name), (tr("col.pid"), pid), (tr("col.ppid"), ppid),
+                (tr("col.parent"), lambda d: process(d).get("parent", "")), (tr("col.user"), user),
+                (tr("col.finding"), lambda d: d.detection_type), (tr("col.rule"), rules),
+                (tr("col.confidence"), confidence), (tr("col.path"), path),
+            ]
+        if title == "Network":
+            def connection(detection):
+                evidence = detection.evidence if isinstance(detection.evidence, dict) else {}
+                return evidence.get("connection") or {}
+
+            return [
+                (tr("col.risk"), risk), (tr("col.process"), name), (tr("col.pid"), pid),
+                (tr("col.local"), lambda d: connection(d).get("local", "")),
+                (tr("col.remote"), lambda d: connection(d).get("remote", "")),
+                (tr("col.protocol"), lambda d: connection(d).get("protocol", "")),
+                (tr("col.finding"), lambda d: d.detection_type), (tr("col.rule"), rules),
+                (tr("col.confidence"), confidence),
+            ]
+        if title == "Registry":
+            def registry(detection):
+                evidence = detection.evidence if isinstance(detection.evidence, dict) else {}
+                return evidence.get("registry") or {}
+
+            return [
+                (tr("col.risk"), risk), (tr("col.key"), lambda d: registry(d).get("key", d.indicator)),
+                (tr("col.value"), lambda d: registry(d).get("value_name", "")),
+                (tr("col.data"), lambda d: registry(d).get("value_data", "")[:80]),
+                (tr("col.finding"), lambda d: d.detection_type), (tr("col.confidence"), confidence),
+            ]
+        if title == "Activity":
+            def event(detection):
+                evidence = detection.evidence if isinstance(detection.evidence, dict) else {}
+                return evidence.get("event") or {}
+
+            return [
+                (tr("col.risk"), risk), (tr("col.event"), lambda d: event(d).get("event_id", d.indicator)),
+                (tr("col.provider"), lambda d: event(d).get("provider", "")),
+                (tr("col.channel"), lambda d: event(d).get("channel", "").split("/")[-1]),
+                (tr("col.user"), lambda d: event(d).get("fields", {}).get("TargetUserName", "")),
+                (tr("col.finding"), lambda d: d.detection_type), (tr("col.confidence"), confidence),
+            ]
+        if title == "Files":
+            def file_info(detection):
+                evidence = detection.evidence if isinstance(detection.evidence, dict) else {}
+                return evidence.get("file") or {}
+
+            return [
+                (tr("col.risk"), risk), (tr("col.file"), lambda d: file_info(d).get("name", d.indicator)),
+                (tr("col.type"), lambda d: file_info(d).get("mime", "")),
+                (tr("col.finding"), lambda d: d.detection_type), (tr("col.rule"), rules),
+                (tr("col.confidence"), confidence), (tr("col.path"), lambda d: d.file_path or file_info(d).get("path", "")),
+            ]
+        return [(tr("col.risk"), risk), (tr("col.finding"), lambda d: d.detection_type),
+                ("Indicator", lambda d: d.indicator), (tr("col.confidence"), confidence)]
+
     def start(self):
         if self.worker and self.worker.isRunning():
             return
         if self.needs_target:
-            path = QFileDialog.getExistingDirectory(self, "Choose a folder to scan")
+            path = QFileDialog.getExistingDirectory(self, tr("scan.target_prompt"))
             if not path:
                 return
             self.target = path
@@ -226,7 +325,10 @@ class ScanPage(QWidget):
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self.run_btn.setEnabled(False)
-        self.state.setText("Scanning…")
+        if hasattr(self, "stop_btn"):
+            self.stop_btn.setVisible(True)
+            self.stop_btn.setEnabled(True)
+        self.state.setText(tr("scan.scanning"))
         if self.shell:
             self.shell.set_busy(True)
         deep = False
@@ -242,6 +344,34 @@ class ScanPage(QWidget):
         self.worker.failed.connect(self._failed)
         self.worker.start()
 
+    def stop(self):
+        if not self.worker or not self.worker.isRunning():
+            return
+        self.stop_btn.setEnabled(False)
+        self.state.setText(tr("scan.stopping"))
+        self.worker.stop()
+        if not hasattr(self, "_stop_timer"):
+            self._stop_timer = QTimer(self)
+            self._stop_timer.setSingleShot(True)
+            self._stop_timer.timeout.connect(self._force_stop)
+        self._stop_timer.start(10000)
+
+    def _force_stop(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.terminate()
+            self.worker.wait(2000)
+            self.progress.setVisible(False)
+            self.run_btn.setEnabled(True)
+            self.stop_btn.setVisible(False)
+            self.state.setText(tr("scan.stopped_forced"))
+            if self.shell:
+                self.shell.set_busy(False)
+
+    def _stop_watchdog(self):
+        timer = getattr(self, "_stop_timer", None)
+        if timer is not None:
+            timer.stop()
+
     def _progress(self, current, total, message):
         if total > 0:
             self.progress.setRange(0, total)
@@ -253,10 +383,10 @@ class ScanPage(QWidget):
         from reporting.export import export_results
 
         if self.result is None or not self.result.detections:
-            QMessageBox.information(self, "Export", "Run a scan with findings first.")
+            QMessageBox.information(self, "Export", tr("scan.no_findings"))
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export scan results", f"{self.title_text.lower()}_findings.csv",
+            self, tr("scan.export"), f"{self.title_text.lower()}_findings.csv",
             "CSV (*.csv);;JSON (*.json)",
         )
         if not path:
@@ -266,7 +396,7 @@ class ScanPage(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
             return
-        QMessageBox.information(self, "Export", f"Saved {len(self.result.detections)} finding(s) to:\n{written}")
+        QMessageBox.information(self, "Export", tr("scan.export_saved", count=len(self.result.detections), path=written))
 
     def _open_details(self, *_):
         row = self.table.currentRow()
@@ -278,28 +408,39 @@ class ScanPage(QWidget):
         row = self.table.rowCount()
         self.table.insertRow(row)
         risk = detection.risk_level.value
-        values = [risk.upper(), detection.detection_type, detection.indicator,
-                  f"{detection.confidence:.0%}"]
-        for column, value in enumerate(values):
+        process = (detection.evidence or {}).get("process", {}) if isinstance(detection.evidence, dict) else {}
+        for column, (_, extractor) in enumerate(self.columns):
+            try:
+                value = extractor(detection)
+            except Exception:
+                value = ""
             item = QTableWidgetItem(str(value))
             if column == 0:
                 item.setForeground(QColor(self.t.get(risk, self.t["ink"])))
+            if process:
+                detail = process.get("command_line") or process.get("path") or ""
+                if column == 1:
+                    item.setToolTip(detail)
             self.table.setItem(row, column, item)
 
     def _finished(self, result):
         self.result = result
         self.run_btn.setEnabled(True)
+        self.stop_btn.setVisible(False)
+        self._stop_watchdog()
         self.progress.setVisible(False)
-        self.state.setText(
-            f"Complete · {result.total_items} items · {len(result.detections)} findings"
-        )
+        status = getattr(getattr(result, "status", None), "value", "")
+        key = "scan.stopped" if status == "cancelled" else "scan.complete"
+        self.state.setText(tr(key, items=result.total_items, findings=len(result.detections)))
         if self.shell:
             self.shell.on_scan_done(result)
 
     def _failed(self, message):
         self.run_btn.setEnabled(True)
+        self.stop_btn.setVisible(False)
+        self._stop_watchdog()
         self.progress.setVisible(False)
-        self.state.setText(f"Scan failed: {message}")
+        self.state.setText(tr("scan.failed", message=message))
         if self.shell:
             self.shell.set_busy(False)
 
@@ -336,32 +477,29 @@ class OverviewPage(QWidget):
         row.setSpacing(26)
         copy = QVBoxLayout()
         copy.setSpacing(9)
-        copy.addWidget(micro("local session  ·  private by design", t["muted"]))
-        self.headline = QLabel("Your PC looks healthy.")
+        copy.addWidget(micro(tr("overview.session"), t["muted"]))
+        self.headline = QLabel(tr("overview.healthy"))
         self.headline.setStyleSheet(f"color: {t['ink']}; font-size: 33px; font-weight: 700;")
         copy.addWidget(self.headline)
-        self.subline = QLabel(
-            "Check what starts with Windows, what is running now, and the last "
-            "24 hours of activity — all on this machine."
-        )
+        self.subline = QLabel(tr("overview.subline"))
         self.subline.setWordWrap(True)
         self.subline.setStyleSheet(f"color: {t['muted']}; font-size: 13px;")
         copy.addWidget(self.subline)
 
         chips = QHBoxLayout()
         chips.setSpacing(8)
-        self.chip_findings = pill("No findings yet", t)
-        chips.addWidget(pill("Real-time ready", t))
+        self.chip_findings = pill(tr("overview.no_findings"), t)
+        chips.addWidget(pill(tr("overview.realtime"), t))
         chips.addWidget(self.chip_findings)
         chips.addStretch(1)
         copy.addLayout(chips)
 
         buttons = QHBoxLayout()
-        run = QPushButton("Run a quick check")
+        run = QPushButton(tr("overview.quick"))
         run.setObjectName("primary")
         run.clicked.connect(shell.quick_check)
         buttons.addWidget(run)
-        findings = QPushButton("All scans")
+        findings = QPushButton(tr("overview.all_scans"))
         findings.setObjectName("ghost")
         findings.clicked.connect(lambda: shell.go_to("Scans"))
         buttons.addWidget(findings)
@@ -370,9 +508,9 @@ class OverviewPage(QWidget):
         copy.addStretch(1)
         row.addLayout(copy, 5)
 
-        self.gauge = Gauge(t["accent"], t["line"], t["ink"], t["muted"], "health score")
-        self.gauge.set_value(100)
-        self.gauge.setMinimumSize(250, 195)
+        self.gauge = Gauge(t["accent"], t["line"], t["ink"], t["muted"], tr("overview.health"))
+        self.gauge.set_value(None)
+        self.gauge.setMinimumSize(280, 230)
         row.addWidget(self.gauge, 2, Qt.AlignCenter)
         hero.body.addLayout(row)
         layout.addWidget(hero)
@@ -380,8 +518,8 @@ class OverviewPage(QWidget):
         stats = QHBoxLayout()
         stats.setSpacing(16)
         self.stat_values = {}
-        for key, caption in (("items", "objects checked"), ("findings", "findings"),
-                             ("apps", "applications"), ("events", "log events")):
+        for key, caption in (("items", tr("stat.objects")), ("findings", tr("stat.findings")),
+                             ("apps", tr("stat.apps")), ("events", tr("stat.events_log"))):
             tile = QFrame()
             tile.setObjectName("tile")
             tile.body = QVBoxLayout(tile)
@@ -402,12 +540,12 @@ class OverviewPage(QWidget):
         attention = card(t)
         soft_shadow(attention, t)
         head = QHBoxLayout()
-        head.addWidget(QLabel("Worth a look"))
+        head.addWidget(QLabel(tr("overview.worth")))
         head.itemAt(0).widget().setStyleSheet(
             f"color: {t['ink']}; font-size: 16px; font-weight: 700;"
         )
         head.addStretch(1)
-        head.addWidget(micro("sorted by risk", t["muted"]))
+        head.addWidget(micro(tr("overview.sorted"), t["muted"]))
         attention.body.addLayout(head)
         self.attention_box = QVBoxLayout()
         self.attention_box.setSpacing(0)
@@ -417,23 +555,22 @@ class OverviewPage(QWidget):
 
         checked = card(t)
         soft_shadow(checked, t)
-        title = QLabel("What we checked")
+        title = QLabel(tr("overview.checked"))
         title.setStyleSheet(f"color: {t['ink']}; font-size: 16px; font-weight: 700;")
         checked.body.addWidget(title)
         self.checked_box = QVBoxLayout()
         self.checked_box.setSpacing(0)
         checked.body.addLayout(self.checked_box)
         self.checked_marks = {}
-        for text in ("Startup programs and services", "Running processes and signatures",
-                     "Windows event logs", "Installed software", "Network connections"):
-            self._checked_row(text, False)
+        for key in ("registry", "process", "eventlog", "software", "network"):
+            self._checked_row(key, False)
         checked.body.addStretch(1)
         bottom.addWidget(checked, 2)
 
         layout.addLayout(bottom, 1)
         outer.addWidget(scroll)
 
-    def _checked_row(self, text: str, done: bool):
+    def _checked_row(self, key: str, done: bool):
         row = QFrame()
         row.setObjectName("row")
         line = QHBoxLayout(row)
@@ -441,8 +578,8 @@ class OverviewPage(QWidget):
         mark = QLabel("✓" if done else "○")
         mark.setStyleSheet(f"color: {self.t['accent'] if done else self.t['muted']};")
         line.addWidget(mark)
-        self.checked_marks[text] = mark
-        item = QLabel(text)
+        self.checked_marks[key] = mark
+        item = QLabel(tr("overview.checked." + key if key != "software" else "overview.checked.file"))
         item.setStyleSheet(f"color: {self.t['ink'] if done else self.t['muted']}; font-size: 12px;")
         line.addWidget(item, 1)
         self.checked_box.addWidget(row)
@@ -453,7 +590,7 @@ class OverviewPage(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         if not detections:
-            empty = QLabel("Nothing needs attention right now.")
+            empty = QLabel(tr("overview.nothing"))
             empty.setStyleSheet(f"color: {self.t['muted']}; font-size: 12px;")
             self.attention_box.addWidget(empty)
             return
@@ -497,10 +634,10 @@ class ScansPage(QWidget):
         header = QWidget()
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(36, 26, 36, 10)
-        title = QLabel("Scans")
+        title = QLabel(tr("scans.title"))
         title.setStyleSheet(f"color: {t['ink']}; font-size: 30px; font-weight: 700;")
         header_layout.addWidget(title)
-        header_layout.addWidget(QLabel("Pick a scanner. Results stay on this machine."))
+        header_layout.addWidget(QLabel(tr("scans.subtitle")))
         header_layout.itemAt(1).widget().setStyleSheet(f"color: {t['muted']};")
         layout.addWidget(header)
 
@@ -518,11 +655,11 @@ class ScansPage(QWidget):
 
         self.pages = {}
         for key, desc, factory, target in (
-            ("Processes", "What is running right now, and what looks wrong.", ProcessScanner, False),
-            ("Files", "Static analysis of a folder: YARA, entropy, PE, Office, stego.", FileScanner, True),
-            ("Network", "Live connections, listeners and C2-style patterns.", NetworkScanner, False),
-            ("Registry", "Autoruns, services and persistence locations.", RegistryScanner, False),
-            ("Activity", "Logons, services, tasks and tampering in Windows logs.", EventLogScanner, False),
+            ("Processes", tr("scan.desc.processes"), ProcessScanner, False),
+            ("Files", tr("scan.desc.files"), FileScanner, True),
+            ("Network", tr("scan.desc.network"), NetworkScanner, False),
+            ("Registry", tr("scan.desc.registry"), RegistryScanner, False),
+            ("Activity", tr("scan.desc.activity"), EventLogScanner, False),
         ):
             page = ScanPage(t, key, desc, factory, needs_target=target, shell=shell)
             page.setVisible(False)
@@ -530,7 +667,8 @@ class ScansPage(QWidget):
             self.stack.addWidget(page)
 
         for index, key in enumerate(self.pages):
-            button = QPushButton(key)
+            button = QPushButton(tr("scan.page." + key.lower()))
+            button.setProperty("page_key", key)
             button.setObjectName("pill")
             button.setCheckable(True)
             button.setChecked(index == 0)
@@ -546,7 +684,8 @@ class ScansPage(QWidget):
             return
         self.stack.setCurrentWidget(page)
         for button in self.findChildren(QPushButton, "pill"):
-            button.setChecked(button.text() == key)
+            if button.property("page_key"):
+                button.setChecked(button.property("page_key") == key)
 
 
 class ToolsPage(QWidget):
@@ -557,17 +696,17 @@ class ToolsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 26, 36, 30)
         layout.setSpacing(16)
-        title = QLabel("Tools")
+        title = QLabel(tr("tools.title"))
         title.setStyleSheet(f"color: {t['ink']}; font-size: 30px; font-weight: 700;")
         layout.addWidget(title)
-        layout.addWidget(QLabel("Startup, software, reputation checks, canaries and quarantine."))
+        layout.addWidget(QLabel(tr("tools.subtitle")))
         layout.itemAt(1).widget().setStyleSheet(f"color: {t['muted']};")
 
         row = QHBoxLayout()
         row.setSpacing(16)
         for heading, body, handler in (
-            ("Toolbox", "Startup impact, installed software, file/link checks, canaries, quarantine.", self._tools),
-            ("PC health", "Score, recommendations and what changed since last time.", self._health),
+            (tr("tools.toolbox"), tr("tools.toolbox_body"), self._tools),
+            (tr("tools.health"), tr("tools.health_body"), self._health),
         ):
             frame = card(t)
             soft_shadow(frame, t)
@@ -578,7 +717,7 @@ class ToolsPage(QWidget):
             description.setWordWrap(True)
             description.setStyleSheet(f"color: {t['muted']}; font-size: 12px;")
             frame.body.addWidget(description)
-            button = QPushButton("Open")
+            button = QPushButton(tr("tools.open"))
             button.setObjectName("primary")
             button.clicked.connect(handler)
             frame.body.addWidget(button, 0, Qt.AlignLeft)
@@ -614,7 +753,7 @@ class LogsPage(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 26, 36, 30)
-        title = QLabel("Activity log")
+        title = QLabel(tr("logs.title"))
         title.setStyleSheet(f"color: {t['ink']}; font-size: 30px; font-weight: 700;")
         layout.addWidget(title)
         self.view = QTableWidget(0, 2)
@@ -639,23 +778,37 @@ class SettingsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(36, 26, 36, 30)
         layout.setSpacing(16)
-        title = QLabel("Settings")
+        title = QLabel(tr("settings.title"))
         title.setStyleSheet(f"color: {t['ink']}; font-size: 30px; font-weight: 700;")
         layout.addWidget(title)
 
         appearance = card(t)
-        appearance.body.addWidget(QLabel("Appearance"))
+        appearance.body.addWidget(QLabel(tr("settings.appearance")))
         appearance.body.itemAt(0).widget().setStyleSheet(
             f"color: {t['ink']}; font-size: 15px; font-weight: 700;"
         )
         row = QHBoxLayout()
-        row.addWidget(QLabel("Theme"))
+        row.addWidget(QLabel(tr("settings.theme")))
         self.theme_box = QComboBox()
-        self.theme_box.addItems(["Light", "Dark"])
-        self.theme_box.setCurrentText(t["name"].title())
-        self.theme_box.currentTextChanged.connect(shell.change_theme)
+        self.theme_box.addItems([tr("settings.light"), tr("settings.dark")])
+        self.theme_box.setCurrentIndex(0 if t["name"] == "light" else 1)
+        self.theme_box.currentIndexChanged.connect(
+            lambda index: shell.change_theme("Dark" if index == 1 else "Light")
+        )
         row.addWidget(self.theme_box, 1)
         appearance.body.addLayout(row)
+
+        language_row = QHBoxLayout()
+        language_row.addWidget(QLabel(tr("settings.language")))
+        self.language_box = QComboBox()
+        self.language_box.addItems([LANGUAGES["en"], LANGUAGES["fr"]])
+        self.language_box.setCurrentIndex(0 if current_language() == "en" else 1)
+        self.language_box.currentIndexChanged.connect(
+            lambda index: shell.change_language("fr" if index == 1 else "en")
+        )
+        language_row.addWidget(self.language_box, 1)
+        appearance.body.addLayout(language_row)
+
         layout.addWidget(appearance)
 
         engine = card(t)
@@ -663,20 +816,56 @@ class SettingsPage(QWidget):
         engine.body.itemAt(0).widget().setStyleSheet(
             f"color: {t['ink']}; font-size: 15px; font-weight: 700;"
         )
-        self.deep = QCheckBox("Enable deep analysis on supported scans")
+        self.deep = QCheckBox(tr("settings.deep"))
         self.deep.setChecked(bool(get_config().config.scan.deep_analysis))
         self.deep.toggled.connect(self._toggle_deep)
         engine.body.addWidget(self.deep)
 
         from utils.config import get_config
-        self.online = QCheckBox("Check hashes with VirusTotal (slower, needs API key)")
+        self.online = QCheckBox(tr("settings.online"))
         self.online.setChecked(bool(get_config().config.scan.online_reputation))
         self.online.toggled.connect(self._toggle_online)
         engine.body.addWidget(self.online)
-        open_settings = QPushButton("Open advanced settings (API keys, whitelist, YARA)")
+        open_settings = QPushButton(tr("settings.advanced"))
         open_settings.clicked.connect(shell.open_advanced_settings)
         engine.body.addWidget(open_settings, 0, Qt.AlignLeft)
         layout.addWidget(engine)
+
+        about_card = card(t)
+        about_card.body.addWidget(QLabel(tr("about.about_app")))
+        about_card.body.itemAt(0).widget().setStyleSheet(
+            f"color: {t['ink']}; font-size: 15px; font-weight: 700;"
+        )
+        author = QLabel(f"{tr('about.role')} {branding.AUTHOR}")
+        author.setStyleSheet(f"color: {t['ink']}; font-size: 13px;")
+        about_card.body.addWidget(author)
+        meta = QLabel(
+            f"{tr('about.version', version=branding.APP_VERSION)} · "
+            f"© {branding.YEAR} {branding.AUTHOR} · {tr('about.rights')} · "
+            f"{branding.LICENSE_NAME}"
+        )
+        meta.setWordWrap(True)
+        meta.setStyleSheet(f"color: {t['muted']}; font-size: 11px;")
+        about_card.body.addWidget(meta)
+        blurb = QLabel(tr("about.settings_blurb"))
+        blurb.setWordWrap(True)
+        blurb.setStyleSheet(f"color: {t['muted']}; font-size: 11px;")
+        about_card.body.addWidget(blurb)
+
+        about_row = QHBoxLayout()
+        about_btn = QPushButton(tr("about.open_about"))
+        about_btn.clicked.connect(shell.open_about)
+        about_row.addWidget(about_btn)
+        github_btn = QPushButton("GitHub")
+        github_btn.clicked.connect(
+            lambda: __import__("PyQt5.QtGui", fromlist=["QDesktopServices"]).QDesktopServices.openUrl(
+                __import__("PyQt5.QtCore", fromlist=["QUrl"]).QUrl(branding.GITHUB_URL)
+            )
+        )
+        about_row.addWidget(github_btn)
+        about_row.addStretch(1)
+        about_card.body.addLayout(about_row)
+        layout.addWidget(about_card)
         layout.addStretch(1)
 
     def _toggle_deep(self, enabled: bool):
@@ -699,12 +888,15 @@ class SettingsPage(QWidget):
 class StudioWindow(QMainWindow):
     def __init__(self, theme: str = "light", results: Optional[List] = None, page: str = "Overview"):
         super().__init__()
+        load_language()
         self.theme_name = theme if theme in THEMES else "light"
         self.t = THEMES[self.theme_name]
         self.results: List = results or []
         self.findings: List = []
 
-        self.setWindowTitle("CyberGuardian")
+        self.setWindowTitle(
+            f"{branding.APP_NAME} {branding.APP_VERSION} — by {branding.AUTHOR}"
+        )
         self.resize(1280, 840)
         self.setStyleSheet(qss(self.t).replace("{font}", load_fonts()))
 
@@ -736,7 +928,15 @@ class StudioWindow(QMainWindow):
         self.all_findings = []
         self.canaries.events_detected.connect(self._on_canary_events)
         self._setup_tray()
-        self.statusBar().showMessage("Ready")
+        footer = QLabel(
+            f"© {branding.YEAR} {branding.AUTHOR} · {tr('about.rights')} · "
+            f'<a href="{branding.GITHUB_URL}" style="color:{self.t["accent"]};'
+            f' text-decoration:none;">GitHub</a>'
+        )
+        footer.setOpenExternalLinks(True)
+        footer.setStyleSheet(f"color: {self.t['muted']}; font-size: 10px; padding-right: 12px;")
+        self.statusBar().addPermanentWidget(footer)
+        self.statusBar().showMessage(tr("scan.ready"))
         self.go_to(page)
         self.refresh_overview()
 
@@ -754,14 +954,19 @@ class StudioWindow(QMainWindow):
             f"background: {self.t['accent']}; color: white; border-radius: 11px; font-weight: 800;"
         )
         layout.addWidget(mark)
-        brand = QLabel("CyberGuardian")
+        brand = QLabel(branding.APP_NAME)
         brand.setStyleSheet(f"color: {self.t['ink']}; font-size: 17px; font-weight: 700;")
         layout.addWidget(brand)
+
+        byline = QLabel(tr("about.byline", author=branding.AUTHOR))
+        byline.setStyleSheet(f"color: {self.t['muted']}; font-size: 10px;")
+        layout.addWidget(byline)
         layout.addSpacing(14)
 
         self.nav_buttons = {}
         for key in ("Overview", "Scans", "Findings", "Canaries", "Tools", "Logs"):
-            button = QPushButton(key)
+            button = QPushButton(tr("nav." + key.lower()))
+            button.setProperty("page_key", key)
             button.setObjectName("pill")
             button.setCheckable(True)
             button.clicked.connect(lambda _=False, name=key: self.go_to(name))
@@ -769,11 +974,17 @@ class StudioWindow(QMainWindow):
             self.nav_buttons[key] = button
         layout.addStretch(1)
 
-        theme_button = QPushButton("Dark mode" if self.theme_name == "light" else "Light mode")
+        theme_button = QPushButton(
+            tr("app.theme_dark") if self.theme_name == "light" else tr("app.theme_light")
+        )
         theme_button.clicked.connect(self.toggle_theme)
         layout.addWidget(theme_button)
 
-        settings = QPushButton("Settings")
+        about = QPushButton(tr("about.about_short"))
+        about.clicked.connect(self.open_about)
+        layout.addWidget(about)
+
+        settings = QPushButton(tr("app.settings"))
         settings.clicked.connect(lambda: self.go_to("Settings"))
         layout.addWidget(settings)
         return bar
@@ -786,10 +997,28 @@ class StudioWindow(QMainWindow):
         self.stack.setCurrentWidget(page)
         for name, button in self.nav_buttons.items():
             button.setChecked(name == key)
-        self.statusBar().showMessage(key)
+        self.statusBar().showMessage(tr("nav." + key.lower()))
 
     def toggle_theme(self):
         self.change_theme("Dark" if self.theme_name == "light" else "Light")
+
+    def change_language(self, code: str):
+        if code == current_language():
+            return
+        set_language(code)
+        geometry = self.saveGeometry()
+        maximised = self.isMaximized()
+        page_key = next(
+            (key for key, page in self.pages.items() if page is self.stack.currentWidget()),
+            "Overview",
+        )
+        replacement = StudioWindow(self.theme_name, self.results, page_key)
+        replacement.show()
+        if maximised:
+            replacement.showMaximized()
+        else:
+            replacement.restoreGeometry(geometry)
+        self.close()
 
     def change_theme(self, name: str):
         target = "dark" if str(name).lower().startswith("d") else "light"
@@ -817,11 +1046,11 @@ class StudioWindow(QMainWindow):
         self.statusBar().showMessage("Scanning…" if busy else "Ready")
 
     SCAN_TO_CHECK = {
-        "process": "Running processes and signatures",
-        "registry": "Startup programs and services",
-        "eventlog": "Windows event logs",
-        "file": "Files and downloads",
-        "network": "Network connections",
+        "process": "process",
+        "registry": "registry",
+        "eventlog": "eventlog",
+        "file": "software",
+        "network": "network",
     }
 
     def on_scan_done(self, result):
@@ -847,17 +1076,18 @@ class StudioWindow(QMainWindow):
         from core.health import compute_health
 
         report = compute_health(self.results)
-        self.overview.gauge.set_value(report.score)
+        self.overview.gauge.set_value(report.score if self.results else None)
         self.overview.chip_findings.setText(
-            "No findings yet" if not self.findings else f"{len(self.findings)} findings"
+            tr("overview.no_findings") if not self.findings
+            else tr("overview.findings_count", count=len(self.findings))
         )
         if report.score >= 85:
-            self.overview.headline.setText("Your PC looks healthy.")
+            self.overview.headline.setText(tr("overview.healthy"))
         elif report.score >= 60:
-            self.overview.headline.setText("A few things are worth checking.")
+            self.overview.headline.setText(tr("overview.check"))
         else:
-            self.overview.headline.setText("This PC needs your attention.")
-        self.overview.subline.setText(report.detail)
+            self.overview.headline.setText(tr("overview.attention"))
+        self.overview.subline.setText(report.detail if self.results else tr("overview.no_scan_detail"))
 
         items = sum(result.total_items for result in self.results)
         self.overview.stat_values["items"].setText(f"{items:,}".replace(",", " "))
@@ -895,22 +1125,23 @@ class StudioWindow(QMainWindow):
         location = first.renamed_to or first.path
         if self.tray is not None:
             self.tray.showMessage(
-                "Possible ransomware activity",
+                tr("canary.alert_title"),
                 f"{first.name}\n{location}",
                 QSystemTrayIcon.Warning,
                 15000,
             )
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Critical)
-        box.setWindowTitle("Canary alert")
-        box.setText(f"<b>{first.name}</b> was {first.kind}.")
-        box.setInformativeText(
-            f"Location: {location}\n"
-            f"Detected: {first.detected_at[:19].replace('T', ' ')}\n\n"
-            f"{first.guidance[0]}"
-        )
-        open_btn = box.addButton("Open report", QMessageBox.AcceptRole)
-        box.addButton("Dismiss", QMessageBox.RejectRole)
+        box.setWindowTitle(tr("canary.alert_box"))
+        box.setText(tr("canary.alert_text", name=first.name, kind=first.kind))
+        box.setInformativeText(tr(
+            "canary.alert_info",
+            location=location,
+            when=first.detected_at[:19].replace("T", " "),
+            action=first.guidance[0] if first.guidance else "",
+        ))
+        open_btn = box.addButton(tr("canary.report"), QMessageBox.AcceptRole)
+        box.addButton(tr("canary.dismiss"), QMessageBox.RejectRole)
         try:
             box.exec_()
             if box.clickedButton() is open_btn:
@@ -938,10 +1169,10 @@ class StudioWindow(QMainWindow):
         from reporting.export import export_results
 
         if not self.results:
-            QMessageBox.information(self, "Export", "No scan results to export yet.")
+            QMessageBox.information(self, "Export", tr("scan.export_all_none"))
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export all results", "cyberguardian_findings.csv",
+            self, tr("findings.export_title"), "cyberguardian_findings.csv",
             "CSV (*.csv);;JSON (*.json)",
         )
         if not path:
@@ -952,7 +1183,10 @@ class StudioWindow(QMainWindow):
             QMessageBox.critical(self, "Export failed", str(exc))
             return
         total = sum(len(result.detections) for result in self.results)
-        QMessageBox.information(self, "Export", f"Saved {total} finding(s) to:\n{written}")
+        QMessageBox.information(self, "Export", tr("scan.export_saved", count=total, path=written))
+
+    def open_about(self):
+        AboutDialog(self.t, self).exec_()
 
     def open_advanced_settings(self):
         from ui.main_window import SettingsDialog

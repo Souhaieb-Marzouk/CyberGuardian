@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import hashlib
 import threading
 
+from scanners.evidence import merge_evidence, process_payload
 from scanners.base_scanner import (
     BaseScanner, ScanResult, ScanStatus, Detection, RiskLevel
 )
@@ -314,6 +315,8 @@ class ProcessScanner(BaseScanner):
                 self._report_progress(i + 1, len(processes), f"Analyzing {proc_info.name}")
 
                 detections = self._analyze_process(proc_info)
+                for detection in detections:
+                    merge_evidence(detection, "process", process_payload(proc_info))
 
                 for detection in detections:
                     result.add_detection(detection)
@@ -336,6 +339,7 @@ class ProcessScanner(BaseScanner):
                             proc_info, i, len(processes)
                         )
                         for detection in memory_detections:
+                            merge_evidence(detection, "process", process_payload(proc_info))
                             result.add_detection(detection)
                             self._report_detection(detection)
                             log_detection(
@@ -349,7 +353,9 @@ class ProcessScanner(BaseScanner):
 
             result.clean_items = max(0, result.total_items - len(flagged_pids))
 
-            result.status = ScanStatus.COMPLETED
+            if result.status != ScanStatus.CANCELLED:
+
+                result.status = ScanStatus.COMPLETED
             
             # Log deep analysis summary
             if deep_analysis and self._memory_analyzer:

@@ -28,6 +28,7 @@ from core.reputation import check_target
 from core.software import audit, get_installed_software
 from core.startup import enumerate_startup, set_enabled
 from utils.logging_utils import get_logger
+from utils.i18n import tr
 
 logger = get_logger("ui.tools_dialog")
 
@@ -112,6 +113,43 @@ class ToolsDialog(QDialog):
         self._startup_entries = []
         self._software_entries = []
 
+        # Explicit palette: the dialog is opened from a themed Studio window and
+        # used to inherit light text on light tab backgrounds in dark mode.
+        self.setStyleSheet(f"""
+            QDialog {{ background: {COLORS['bg']}; color: {COLORS['text']}; }}
+            QLabel {{ color: {COLORS['text']}; }}
+            QTabWidget::pane {{ border: 1px solid {COLORS['border']}; border-radius: 8px; }}
+            QTabBar::tab {{
+                background: {COLORS['card']}; color: {COLORS['text']};
+                border: 1px solid {COLORS['border']};
+                border-bottom: none; border-top-left-radius: 8px;
+                border-top-right-radius: 8px; padding: 8px 16px; margin-right: 2px;
+            }}
+            QTabBar::tab:selected {{
+                background: {COLORS['primary']}; color: #ffffff; font-weight: 700;
+            }}
+            QTabBar::tab:hover {{ color: {COLORS['primary']}; }}
+            QPushButton {{
+                background: {COLORS['card']}; color: {COLORS['text']};
+                border: 1px solid {COLORS['border']}; border-radius: 8px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{ border-color: {COLORS['primary']}; }}
+            QLineEdit, QTextEdit, QComboBox {{
+                background: {COLORS['card']}; color: {COLORS['text']};
+                border: 1px solid {COLORS['border']}; border-radius: 8px; padding: 6px;
+            }}
+            QCheckBox {{ color: {COLORS['text']}; }}
+            QTableWidget {{
+                background: {COLORS['card']}; color: {COLORS['text']};
+                gridline-color: {COLORS['border']};
+            }}
+            QHeaderView::section {{
+                background: {COLORS['bg']}; color: {COLORS['text']};
+                border: 1px solid {COLORS['border']}; padding: 4px;
+            }}
+        """)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
@@ -121,11 +159,11 @@ class ToolsDialog(QDialog):
         layout.addWidget(title)
 
         tabs = QTabWidget()
-        tabs.addTab(self._build_startup_tab(), "Startup")
-        tabs.addTab(self._build_software_tab(), "Software")
-        tabs.addTab(self._build_check_tab(), "Check a file or link")
-        tabs.addTab(self._build_canary_tab(), "Ransomware canaries")
-        tabs.addTab(self._build_quarantine_tab(), "Quarantine")
+        tabs.addTab(self._build_startup_tab(), tr("tools.tab.startup"))
+        tabs.addTab(self._build_software_tab(), tr("tools.tab.software"))
+        tabs.addTab(self._build_check_tab(), tr("tools.tab.check"))
+        tabs.addTab(self._build_canary_tab(), tr("tools.tab.canary"))
+        tabs.addTab(self._build_quarantine_tab(), tr("tools.tab.quarantine"))
         layout.addWidget(tabs, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
@@ -137,13 +175,14 @@ class ToolsDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        self.startup_table = _table(["Name", "Impact", "Source", "State", "Publisher"])
+        self.startup_table = _table([tr("tools.col.name"), tr("tools.col.impact"), tr("tools.col.source"),
+                tr("tools.col.state"), tr("tools.col.publisher")])
         layout.addWidget(self.startup_table, 1)
 
         row = QHBoxLayout()
-        row.addWidget(_button("Refresh", self.refresh_startup))
-        row.addWidget(_button("Disable selected", lambda: self._toggle_startup(False)))
-        row.addWidget(_button("Enable selected", lambda: self._toggle_startup(True)))
+        row.addWidget(_button(tr("tools.refresh"), self.refresh_startup))
+        row.addWidget(_button(tr("tools.disable"), lambda: self._toggle_startup(False)))
+        row.addWidget(_button(tr("tools.enable"), lambda: self._toggle_startup(True)))
         row.addStretch(1)
         layout.addLayout(row)
         self.refresh_startup()
@@ -197,11 +236,12 @@ class ToolsDialog(QDialog):
     def _build_software_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.software_table = _table(["Application", "Installed", "Latest", "Status", "Action"])
+        self.software_table = _table([tr("tools.col.application"), tr("tools.col.installed"), tr("tools.col.latest"),
+                tr("tools.col.status"), tr("tools.col.action")])
         layout.addWidget(self.software_table, 1)
         row = QHBoxLayout()
-        row.addWidget(_button("Check for updates", lambda: self.refresh_software(check_updates=True), primary=True))
-        row.addWidget(_button("Refresh", self.refresh_software))
+        row.addWidget(_button(tr("tools.check_updates"), lambda: self.refresh_software(check_updates=True), primary=True))
+        row.addWidget(_button(tr("tools.refresh"), self.refresh_software))
         row.addStretch(1)
         self.software_status = QLabel("")
         self.software_status.setStyleSheet(f"color: {COLORS['muted']}; font-size: 11px;")
@@ -260,7 +300,7 @@ class ToolsDialog(QDialog):
 
             if entry.status == "update_available":
                 action = _button(
-                    "Update",
+                    tr("tools.update"),
                     lambda _=False, e=entry: self._update_software(e),
                     primary=True,
                 )
@@ -328,8 +368,8 @@ class ToolsDialog(QDialog):
         self.check_input = QLineEdit()
         self.check_input.setPlaceholderText("https://example.com or C:\\Downloads\\file.exe")
         row.addWidget(self.check_input, 1)
-        row.addWidget(_button("Browse…", self._browse_file))
-        row.addWidget(_button("Check", self.run_check, primary=True))
+        row.addWidget(_button(tr("tools.browse"), self._browse_file))
+        row.addWidget(_button(tr("tools.check"), self.run_check, primary=True))
         layout.addLayout(row)
 
         self.check_result = QTextEdit()
@@ -382,9 +422,9 @@ class ToolsDialog(QDialog):
         layout.addWidget(text)
 
         row = QHBoxLayout()
-        row.addWidget(_button("Install canaries", self._install_canaries, primary=True))
-        row.addWidget(_button("Check now", self._check_canaries))
-        row.addWidget(_button("Remove", self._remove_canaries))
+        row.addWidget(_button(tr("tools.install"), self._install_canaries, primary=True))
+        row.addWidget(_button(tr("tools.check_now"), self._check_canaries))
+        row.addWidget(_button(tr("tools.remove"), self._remove_canaries))
         row.addStretch(1)
         layout.addLayout(row)
 
@@ -443,13 +483,14 @@ class ToolsDialog(QDialog):
     def _build_quarantine_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.quarantine_table = _table(["File", "Original path", "Size", "Quarantined"])
+        self.quarantine_table = _table([tr("tools.col.file"), tr("tools.col.original"), tr("tools.col.size"),
+                tr("tools.col.quarantined")])
         layout.addWidget(self.quarantine_table, 1)
 
         row = QHBoxLayout()
-        row.addWidget(_button("Refresh", self.refresh_quarantine))
-        row.addWidget(_button("Restore selected", self._restore_selected, primary=True))
-        row.addWidget(_button("Delete permanently", self._delete_selected))
+        row.addWidget(_button(tr("tools.refresh"), self.refresh_quarantine))
+        row.addWidget(_button(tr("tools.restore"), self._restore_selected, primary=True))
+        row.addWidget(_button(tr("tools.delete"), self._delete_selected))
         row.addStretch(1)
         layout.addLayout(row)
         self.refresh_quarantine()

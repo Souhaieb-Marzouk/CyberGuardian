@@ -70,7 +70,7 @@ class Chip(QLabel):
 
 
 class Gauge(QWidget):
-    """Semi-circular score gauge with tick marks and a caption."""
+    """Semi-circular score gauge with a status word and a caption."""
 
     def __init__(self, accent: str, track: str, text: str, muted: str,
                  caption: str = "health", parent=None):
@@ -80,54 +80,88 @@ class Gauge(QWidget):
         self.text_color = QColor(text)
         self.muted = QColor(muted)
         self.caption = caption
-        self.value = 86
-        self.setMinimumSize(260, 190)
+        self.value = None
+        self._family = load_fonts()
+        self.setMinimumSize(280, 215)
 
-    def set_value(self, value: int):
-        self.value = max(0, min(100, value))
+    def set_value(self, value):
+        if value is None:
+            self.value = None
+        else:
+            self.value = max(0, min(100, int(value)))
         self.update()
+
+    def _status(self):
+        from utils.i18n import tr
+
+        if self.value is None:
+            return tr("gauge.no_data"), self.muted
+        if self.value >= 85:
+            return tr("gauge.excellent"), self.accent
+        if self.value >= 70:
+            return tr("gauge.good"), self.accent
+        if self.value >= 50:
+            return tr("gauge.fair"), QColor("#c56a1b")
+        return tr("gauge.poor"), QColor("#c71f37")
 
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         width, height = self.width(), self.height()
-        radius = min(width - 40, (height - 40) * 2) / 2
-        rect = QRectF(width / 2 - radius, height - 55 - radius, radius * 2, radius * 2)
 
-        # ticks
+        margin = 18
+        stroke = 14
+        radius = min((width - 2 * margin) / 2, height - 62)
+        cx = width / 2
+        cy = margin + radius + 6
+        rect = QRectF(cx - radius, cy - radius, radius * 2, radius * 2)
+
+        painter.setPen(QPen(self.track, stroke, Qt.SolidLine, Qt.RoundCap))
+        painter.drawArc(rect, 180 * 16, -180 * 16)
+
+        if self.value is not None:
+            painter.setPen(QPen(self.accent, stroke, Qt.SolidLine, Qt.RoundCap))
+            painter.drawArc(rect, 180 * 16, -int(180 * 16 * self.value / 100))
+
+        # tick marks just outside the arc
         painter.save()
-        painter.translate(width / 2, height - 55)
-        for index in range(41):
-            angle = 180 - index * 4.5
+        painter.translate(cx, cy)
+        for index in range(11):
+            angle = 180 - index * 18
             painter.save()
             painter.rotate(-angle)
-            long_tick = index % 5 == 0
-            painter.setPen(QPen(self.muted.lighter(120), 1.4 if long_tick else 1))
-            length = 10 if long_tick else 5
-            painter.drawLine(0, -int(radius) - 12, 0, -int(radius) - 12 - length)
+            painter.setPen(QPen(self.muted, 1))
+            inner = int(radius) + stroke + 3
+            outer = inner + (8 if index % 5 == 0 else 4)
+            painter.drawLine(0, -inner, 0, -outer)
             painter.restore()
         painter.restore()
 
-        pen = QPen(self.track, 16, Qt.SolidLine, Qt.RoundCap)
-        painter.setPen(pen)
-        painter.drawArc(rect, 180 * 16, -180 * 16)
-
-        pen.setColor(self.accent)
-        painter.setPen(pen)
-        painter.drawArc(rect, 180 * 16, -int(180 * 16 * self.value / 100))
-
-        painter.setPen(self.text_color)
-        font = QFont(self.font())
-        font.setPointSize(42)
+        font = QFont(self._family)
         font.setBold(True)
+        font.setPointSizeF(max(24, min(40, width * 0.145)))
         painter.setFont(font)
-        painter.drawText(QRectF(0, height - 150, width, 70), Qt.AlignCenter, str(self.value))
+        painter.setPen(self.text_color)
+        score = "?" if self.value is None else str(self.value)
+        painter.drawText(
+            QRectF(cx - radius * 0.8, cy - radius * 0.78, radius * 1.6, radius * 0.62),
+            Qt.AlignCenter, score,
+        )
 
-        painter.setPen(self.muted)
-        font.setPointSize(10)
-        font.setBold(False)
+        label, colour = self._status()
+        font.setPointSizeF(max(9, min(12, width * 0.043)))
         painter.setFont(font)
-        painter.drawText(QRectF(0, height - 78, width, 30), Qt.AlignCenter, self.caption)
+        painter.setPen(colour)
+        painter.drawText(
+            QRectF(cx - radius, cy + radius * 0.06, radius * 2, 20),
+            Qt.AlignCenter, label,
+        )
+
+        font.setBold(False)
+        font.setPointSizeF(8.5)
+        painter.setFont(font)
+        painter.setPen(self.muted)
+        painter.drawText(QRectF(0, height - 20, width, 16), Qt.AlignCenter, self.caption)
 
 
 class Bars(QWidget):

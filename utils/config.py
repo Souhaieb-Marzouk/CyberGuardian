@@ -141,6 +141,7 @@ class APIConfig:
 class UIConfig:
     """User interface configuration."""
     theme: str = "cyber_dark"
+    language: str = "en"  # en | fr
     primary_color: str = "#00ff9d"
     secondary_color: str = "#00b8ff"
     background_color: str = "#0a0f0f"

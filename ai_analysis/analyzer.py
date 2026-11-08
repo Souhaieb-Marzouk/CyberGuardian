@@ -688,6 +688,17 @@ Provide your analysis in the following JSON format:
 
 Respond ONLY with valid JSON. Escape every newline inside a string as \\n, never break a JSON string across lines, keep arrays to at most 6 items and detailed_analysis under 200 words."""
 
+        language = str(detection_data.get("language", "en")).lower()
+        if language == "fr":
+            prompt += (
+                "\n\n=== LANGUAGE ===\n"
+                "Write every human-readable value in French (français): summary, "
+                "detailed_analysis, recommendations, indicators, severity_justification "
+                "and all four step lists. Keep JSON keys, verdict enum values, MITRE "
+                "technique IDs, file paths, command lines and rule names unchanged. "
+                "The entire report must be readable by a French-speaking user."
+            )
+
         return prompt
     
     def _parse_ai_response(self, response_text: str, provider: AIProvider,

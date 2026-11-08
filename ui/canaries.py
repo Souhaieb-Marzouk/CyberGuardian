@@ -18,13 +18,18 @@ from PyQt5.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
-from core.canary import CanaryEvent, get_canary_manager
+from core.canary import CanaryEvent, get_canary_manager, guidance_for
+from utils.i18n import tr
 from ui.design_common import micro
 
 KIND_COLORS = {
     "encrypted": "#c71f37", "modified": "#c56a1b", "deleted": "#c71f37",
     "renamed": "#c56a1b", "touched": "#8a6d1f",
 }
+
+
+def kind_label(kind: str) -> str:
+    return tr("canary.kind." + kind).upper()
 
 
 def _fmt(stamp: str) -> str:
@@ -41,7 +46,7 @@ class CanaryReportDialog(QDialog):
         super().__init__(parent)
         self.t = t
         self.event = event
-        self.setWindowTitle(f"Canary alert — {event.name}")
+        self.setWindowTitle(tr("canary.alert_box") + f" — {event.name}")
         self.setMinimumSize(780, 700)
         self.setStyleSheet(
             f"QDialog {{ background: {t['bg']}; color: {t['ink']}; }}"
@@ -54,7 +59,7 @@ class CanaryReportDialog(QDialog):
         layout.setContentsMargins(24, 22, 24, 20)
         layout.setSpacing(10)
 
-        banner = QLabel("  POSSIBLE INTRUSION  ")
+        banner = QLabel("  " + tr("canary.banner") + "  ")
         banner.setAlignment(Qt.AlignCenter)
         banner.setStyleSheet(
             "background: #c71f37; color: white; font-weight: 800;"
@@ -79,7 +84,7 @@ class CanaryReportDialog(QDialog):
         summary.setStyleSheet("font-weight: 600; color: #c56a1b;")
         layout.addWidget(summary)
 
-        layout.addWidget(micro("timeline", t["muted"]))
+        layout.addWidget(micro(tr("canary.timeline"), t["muted"]))
         timeline = QTextEdit()
         timeline.setReadOnly(True)
         timeline.setMaximumHeight(140)
@@ -89,7 +94,7 @@ class CanaryReportDialog(QDialog):
         timeline.setPlainText("\n".join(lines))
         layout.addWidget(timeline)
 
-        layout.addWidget(micro("technical evidence", t["muted"]))
+        layout.addWidget(micro(tr("canary.evidence"), t["muted"]))
         details = QTextEdit()
         details.setReadOnly(True)
         details.setFont(QFont("Consolas", 9))
@@ -107,24 +112,25 @@ class CanaryReportDialog(QDialog):
         details.setPlainText("\n".join(detail_lines))
         layout.addWidget(details, 1)
 
-        layout.addWidget(micro("what to do now", t["muted"]))
+        layout.addWidget(micro(tr("canary.action"), t["muted"]))
         guide = QTextEdit()
         guide.setReadOnly(True)
+        steps = guidance_for(event.kind)
         guide.setPlainText("\n\n".join(
-            f"{index}. {step}" for index, step in enumerate(event.guidance, 1)
+            f"{index}. {step}" for index, step in enumerate(steps, 1)
         ))
         layout.addWidget(guide, 2)
 
         buttons = QDialogButtonBox()
-        open_btn = QPushButton("Open folder")
+        open_btn = QPushButton(tr("detail.open_folder"))
         open_btn.clicked.connect(self._open_folder)
         buttons.addButton(open_btn, QDialogButtonBox.ActionRole)
 
-        copy_btn = QPushButton("Copy report")
+        copy_btn = QPushButton(tr("detail.copy"))
         copy_btn.clicked.connect(self._copy)
         buttons.addButton(copy_btn, QDialogButtonBox.ActionRole)
 
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton(tr("detail.close"))
         close_btn.clicked.connect(self.reject)
         buttons.addButton(close_btn, QDialogButtonBox.RejectRole)
         layout.addWidget(buttons)
@@ -166,7 +172,7 @@ class CanariesPage(QWidget):
         layout.setSpacing(14)
 
         header = QHBoxLayout()
-        title = QLabel("Ransomware canaries")
+        title = QLabel(tr("canary.title"))
         title.setStyleSheet(f"color: {t['ink']}; font-size: 30px; font-weight: 700;")
         header.addWidget(title)
         header.addStretch(1)
@@ -174,26 +180,22 @@ class CanariesPage(QWidget):
         header.addWidget(self.status_chip)
         layout.addLayout(header)
 
-        intro = QLabel(
-            "Decoy documents are placed in the folders ransomware encrypts first. "
-            "If one is changed, renamed or deleted, you get an immediate alert with "
-            "a full incident report."
-        )
+        intro = QLabel(tr("canary.intro"))
         intro.setWordWrap(True)
         intro.setStyleSheet(f"color: {t['muted']};")
         layout.addWidget(intro)
 
         controls = QHBoxLayout()
-        self.arm_btn = QPushButton("Arm canaries")
+        self.arm_btn = QPushButton(tr("canary.arm"))
         self.arm_btn.setObjectName("primary")
         self.arm_btn.clicked.connect(self._arm)
         controls.addWidget(self.arm_btn)
 
-        self.check_btn = QPushButton("Check now")
+        self.check_btn = QPushButton(tr("canary.check"))
         self.check_btn.clicked.connect(self.check_now)
         controls.addWidget(self.check_btn)
 
-        self.remove_btn = QPushButton("Disarm")
+        self.remove_btn = QPushButton(tr("canary.disarm"))
         self.remove_btn.clicked.connect(self._disarm)
         controls.addWidget(self.remove_btn)
         controls.addStretch(1)
@@ -204,7 +206,10 @@ class CanariesPage(QWidget):
         layout.addWidget(self.summary)
 
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Detected", "Canary", "Event", "Location"])
+        self.table.setHorizontalHeaderLabels([
+            tr("canary.col.detected"), tr("canary.col.canary"),
+            tr("canary.col.event"), tr("canary.col.location"),
+        ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -212,7 +217,7 @@ class CanariesPage(QWidget):
         self.table.doubleClicked.connect(self.open_selected)
         layout.addWidget(self.table, 1)
 
-        open_btn = QPushButton("Open report")
+        open_btn = QPushButton(tr("canary.open"))
         open_btn.setObjectName("primary")
         open_btn.clicked.connect(self.open_selected)
         row = QHBoxLayout()
@@ -234,7 +239,7 @@ class CanariesPage(QWidget):
         self.check_btn.setEnabled(armed > 0)
         self.remove_btn.setEnabled(armed > 0)
         self.status_chip.setText(
-            f"{armed} armed" if armed else "Not armed"
+            tr("canary.armed", count=armed) if armed else tr("canary.not_armed")
         )
         self.status_chip.setStyleSheet(
             "background: #123a2c; color: #7fd8b0; border-radius: 10px;"
@@ -244,8 +249,8 @@ class CanariesPage(QWidget):
             " padding: 3px 10px; font-weight: 700; font-size: 11px;"
         )
         self.summary.setText(
-            f"{summary['events']} recorded event(s)"
-            + (f" · last {_fmt(summary['last_event'])}" if summary["last_event"] else "")
+            tr("canary.events", count=summary["events"])
+            + (tr("canary.last", when=_fmt(summary["last_event"])) if summary["last_event"] else "")
         )
 
         events = list(reversed(self.manager.events))
@@ -253,7 +258,7 @@ class CanariesPage(QWidget):
         for event in events:
             row = self.table.rowCount()
             self.table.insertRow(row)
-            values = [_fmt(event.detected_at), event.name, event.kind.upper(),
+            values = [_fmt(event.detected_at), event.name, kind_label(event.kind),
                       event.renamed_to or event.path]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
@@ -265,20 +270,19 @@ class CanariesPage(QWidget):
         created = self.manager.install()
         self.refresh()
         QMessageBox.information(
-            self, "Canaries armed",
-            f"Created {len(created)} decoy document(s) in Documents, Desktop, "
-            "Downloads, OneDrive and Public Documents.\n\n"
-            "Leave them alone; CyberGuardian checks them every few seconds.",
+            self, tr("canary.armed_title"),
+            tr("canary.armed_message", count=len(created)),
         )
 
     def _disarm(self):
         if QMessageBox.question(
-            self, "Disarm canaries",
-            "Remove the decoy files and clear the incident history?",
+            self, tr("canary.disarm_title"), tr("canary.disarm_question")
         ) == QMessageBox.Yes:
             removed = self.manager.remove()
             self.refresh()
-            QMessageBox.information(self, "Disarmed", f"Removed {removed} canary file(s).")
+            QMessageBox.information(
+                self, tr("canary.disarmed"), tr("canary.disarmed_message", count=removed)
+            )
 
     def check_now(self):
         events = self.manager.check()
@@ -286,7 +290,7 @@ class CanariesPage(QWidget):
         if events:
             self.events_detected.emit(events)
         else:
-            QMessageBox.information(self, "Canaries", "All canary files are intact.")
+            QMessageBox.information(self, "Canaries", tr("canary.intact"))
 
     def _tick(self):
         if not self.manager.is_installed():

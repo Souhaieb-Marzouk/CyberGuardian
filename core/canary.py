@@ -539,3 +539,48 @@ def get_canary_manager() -> CanaryManager:
     if _manager is None:
         _manager = CanaryManager()
     return _manager
+
+
+GUIDANCE_FR = {
+    "encrypted": [
+        "Déconnectez immédiatement ce PC du réseau et du Wi-Fi ; ne l'éteignez pas et ne le redémarrez pas.",
+        "Ne supprimez pas le fichier canari : c'est la preuve de la routine de chiffrement et de son heure.",
+        "Notez l'heure exacte affichée ici ; elle marque le début du chiffrement.",
+        "Vérifiez si d'autres fichiers du même dossier ont de nouvelles extensions ou un contenu illisible.",
+        "Identifiez le processus qui a écrit le fichier : Gestionnaire des tâches > Détails, puis vérifiez l'éditeur et le chemin.",
+        "Restaurez les fichiers touchés depuis une sauvegarde hors ligne ou cloud après nettoyage de la machine.",
+        "Signalez l'incident à l'équipe IT/sécurité ; conservez les journaux (Sécurité, Defender, PowerShell).",
+    ],
+    "modified": [
+        "Notez l'heure : quelque chose a écrit dans un fichier qu'aucun processus légitime ne devrait toucher.",
+        "Vérifiez la présence d'une note de rançon (README, DECRYPT, HOW_TO_RECOVER) dans le dossier.",
+        "Examinez les programmes de démarrage, tâches planifiées et services créés récemment.",
+        "Lancez une analyse complète Windows Defender ainsi que les analyses processus, registre et journaux de CyberGuardian.",
+        "Si la modification ne vient pas de vous ou d'un outil approuvé, considérez la machine comme compromise.",
+    ],
+    "deleted": [
+        "Un canari supprimé peut signifier un nettoyeur automatique ou un rançongiciel qui prépare ses fichiers.",
+        "Vérifiez la Corbeille ; si elle est vide, évitez d'écrire davantage et utilisez des outils de récupération.",
+        "Examinez l'activité récente des processus et les journaux pour détecter une suppression ou une altération des outils de sécurité.",
+    ],
+    "renamed": [
+        "Le fichier existe sous un autre nom : les rançongiciels renomment souvent avant de chiffrer.",
+        "Copiez le nouveau fichier de côté avant de l'ouvrir ; n'exécutez rien de son contenu.",
+        "Comparez son hachage avec celui enregistré ici pour confirmer qu'il s'agit du même fichier.",
+    ],
+    "touched": [
+        "L'horodatage a changé mais pas le contenu : typique d'une sauvegarde ou d'une synchronisation.",
+        "Vérifiez si OneDrive ou un logiciel de sauvegarde était actif ; sinon, examinez le processus.",
+    ],
+}
+
+
+def guidance_for(kind: str):
+    """Return the response guide in the active language."""
+    try:
+        from utils.i18n import current_language
+        if current_language() == "fr":
+            return list(GUIDANCE_FR.get(kind, GUIDANCE_FR["modified"]))
+    except Exception:
+        pass
+    return list(GUIDANCE.get(kind, GUIDANCE["modified"]))
