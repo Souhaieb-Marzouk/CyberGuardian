@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 import hashlib
 import threading
 
+from scanners.evidence import merge_evidence, process_payload
 from scanners.base_scanner import (
     BaseScanner, ScanResult, ScanStatus, Detection, RiskLevel
 )
@@ -180,6 +181,11 @@ class ProcessScanner(BaseScanner):
         self._proc_handles: Dict[int, Any] = {}
         self._resource_history: Dict[int, List[Tuple[float, float, float]]] = {}
         self._scanned_hashes: Set[str] = set()  # Track scanned hashes to avoid duplicates within same scan
+        self._yara_seconds = 0.0
+        self._yara_budget_hit = False
+        self._online_lookups = 0
+        self.YARA_BUDGET_SECONDS = 10.0
+        self.MAX_ONLINE_LOOKUPS = 12
         self._yara_file_cache: Dict[Tuple[str, float, int], List[Any]] = {}
         self._memory_analyzer: Optional[MemoryAnalyzer] = None
         self._deep_analysis = False
@@ -196,6 +202,9 @@ class ProcessScanner(BaseScanner):
         self._proc_handles.clear()
         self._yara_file_cache.clear()
         self._scanned_hashes.clear()
+        self._yara_seconds = 0.0
+        self._yara_budget_hit = False
+        self._online_lookups = 0
         self._deep_analysis = False
         self._memory_analysis_count = 0
 
@@ -306,6 +315,8 @@ class ProcessScanner(BaseScanner):
                 self._report_progress(i + 1, len(processes), f"Analyzing {proc_info.name}")
 
                 detections = self._analyze_process(proc_info)
+                for detection in detections:
+                    merge_evidence(detection, "process", process_payload(proc_info))
 
                 for detection in detections:
                     result.add_detection(detection)
@@ -328,6 +339,7 @@ class ProcessScanner(BaseScanner):
                             proc_info, i, len(processes)
                         )
                         for detection in memory_detections:
+                            merge_evidence(detection, "process", process_payload(proc_info))
                             result.add_detection(detection)
                             self._report_detection(detection)
                             log_detection(
@@ -341,7 +353,9 @@ class ProcessScanner(BaseScanner):
 
             result.clean_items = max(0, result.total_items - len(flagged_pids))
 
-            result.status = ScanStatus.COMPLETED
+            if result.status != ScanStatus.CANCELLED:
+
+                result.status = ScanStatus.COMPLETED
             
             # Log deep analysis summary
             if deep_analysis and self._memory_analyzer:
@@ -724,13 +738,16 @@ class ProcessScanner(BaseScanner):
                 proc_info.path and self.whitelist.is_trusted_path(proc_info.path):
             return detections
 
+        # Signature verification runs first: YARA and VirusTotal lookups can
+        # then skip binaries signed by a trusted publisher, which is where
+        # almost all the scanning time used to go.
         detection_methods = [
-            self._check_yara_rules,
-            self._check_behavioral_heuristics,
-            self._check_hash_reputation,
             self._check_digital_signature,
-            self._check_resource_usage,
             self._check_command_line,
+            self._check_behavioral_heuristics,
+            self._check_yara_rules,
+            self._check_hash_reputation,
+            self._check_resource_usage,
         ]
         
         for method in detection_methods:
@@ -745,11 +762,70 @@ class ProcessScanner(BaseScanner):
         
         return detections
     
+    @staticmethod
+    def _yara_evidence(matches, proc_info) -> Dict[str, Any]:
+        """Everything an analyst needs to judge a rule match."""
+        details = []
+        for match in matches:
+            strings = []
+            for offset, data, identifier in (getattr(match, "strings", []) or [])[:20]:
+                try:
+                    preview = bytes(data[:48]).decode("utf-8", "replace")
+                except Exception:
+                    preview = ""
+                strings.append({
+                    "identifier": identifier,
+                    "offset": int(offset),
+                    "preview": preview,
+                    "data_hex": bytes(data[:24]).hex(),
+                })
+            details.append({
+                "rule": getattr(match, "rule", ""),
+                "namespace": getattr(match, "namespace", ""),
+                "tags": list(getattr(match, "tags", []) or []),
+                "severity": getattr(match, "severity", ""),
+                "description": getattr(match, "description", ""),
+                "meta": dict(getattr(match, "meta", {}) or {}),
+                "strings": strings,
+            })
+
+        return {
+            "yara_matches": details,
+            "process": {
+                "name": proc_info.name,
+                "pid": proc_info.pid,
+                "ppid": proc_info.parent_pid,
+                "parent": proc_info.parent_name,
+                "path": proc_info.path,
+                "command_line": (proc_info.command_line or "")[:600],
+                "user": proc_info.username,
+                "signed": proc_info.is_signed,
+                "signer": proc_info.signer,
+                "sha256": proc_info.sha256,
+            },
+            "signature_status": "Valid" if proc_info.is_signed else "Unsigned",
+            "signer": proc_info.signer,
+        }
+
     def _check_yara_rules(self, proc_info: ProcessInfo) -> List[Detection]:
         """Check process executable against Yara rules."""
         detections = []
 
         if not proc_info.path or not Path(proc_info.path).exists():
+            return detections
+
+        # A binary validly signed by a trusted publisher is not worth a YARA
+        # sweep; this is the bulk of the runtime on a normal machine.
+        if proc_info.is_signed and self.whitelist.is_trusted_signature(proc_info.signer):
+            return detections
+
+        if self._yara_budget_hit or self._yara_seconds >= self.YARA_BUDGET_SECONDS:
+            if not self._yara_budget_hit:
+                self._yara_budget_hit = True
+                self.logger.info(
+                    f"YARA time budget ({self.YARA_BUDGET_SECONDS:.0f}s) reached; "
+                    "remaining files skipped for this scan"
+                )
             return detections
 
         # Scan the executable file once per scan: browsers and Electron apps
@@ -763,7 +839,9 @@ class ProcessScanner(BaseScanner):
         if cache_key is not None and cache_key in self._yara_file_cache:
             yara_matches = self._yara_file_cache[cache_key]
         else:
+            started = time.time()
             yara_matches = self.yara_manager.scan_file(Path(proc_info.path))
+            self._yara_seconds += time.time() - started
             if cache_key is not None:
                 self._yara_file_cache[cache_key] = yara_matches
         
@@ -794,7 +872,7 @@ class ProcessScanner(BaseScanner):
                     file_path=proc_info.path,
                     command_line=proc_info.command_line,
                     user=proc_info.username,
-                    evidence={'yara_matches': [{'rule': m.rule, 'meta': m.meta} for m in critical_matches]}
+                    evidence=self._yara_evidence(critical_matches, proc_info)
                 )
                 detections.append(detection)
             
@@ -818,7 +896,7 @@ class ProcessScanner(BaseScanner):
                     file_path=proc_info.path,
                     command_line=proc_info.command_line,
                     user=proc_info.username,
-                    evidence={'yara_matches': [{'rule': m.rule, 'meta': m.meta} for m in high_matches]}
+                    evidence=self._yara_evidence(high_matches, proc_info)
                 )
                 detections.append(detection)
             
@@ -841,7 +919,7 @@ class ProcessScanner(BaseScanner):
                     file_path=proc_info.path,
                     command_line=proc_info.command_line,
                     user=proc_info.username,
-                    evidence={'yara_matches': [{'rule': m.rule, 'meta': m.meta} for m in medium_matches]}
+                    evidence=self._yara_evidence(medium_matches, proc_info)
                 )
                 detections.append(detection)
         
@@ -915,7 +993,12 @@ class ProcessScanner(BaseScanner):
         
         if not proc_info.path or not Path(proc_info.path).exists():
             return detections
-        
+
+        # Hashing large signed binaries (browsers, Office) dominated the scan
+        # without adding value: trusted publishers are not malware sources.
+        if proc_info.is_signed and self.whitelist.is_trusted_signature(proc_info.signer):
+            return detections
+
         # Calculate hash
         try:
             sha256 = self.threat_intel.calculate_file_hash(Path(proc_info.path), 'sha256')
@@ -935,8 +1018,21 @@ class ProcessScanner(BaseScanner):
                 return detections
             self._scanned_hashes.add(sha256)
             
-            # Lookup hash
-            hash_result = self.threat_intel.lookup_hash(sha256, use_online=True)
+            # Trusted-signed binaries are not worth a rate-limited online
+            # lookup, and a scan must never spend minutes in VirusTotal.
+            trusted = proc_info.is_signed and self.whitelist.is_trusted_signature(proc_info.signer)
+            online_enabled = False
+            try:
+                online_enabled = bool(get_config().config.scan.online_reputation)
+            except Exception:
+                pass
+
+            if (trusted or not online_enabled
+                    or self._online_lookups >= self.MAX_ONLINE_LOOKUPS):
+                hash_result = self.threat_intel.lookup_hash(sha256, use_online=False)
+            else:
+                self._online_lookups += 1
+                hash_result = self.threat_intel.lookup_hash(sha256, use_online=True)
             
             if hash_result.is_malicious and hash_result.confidence in ['high', 'medium']:
                 risk_level = RiskLevel.CRITICAL if hash_result.confidence == 'high' else RiskLevel.HIGH

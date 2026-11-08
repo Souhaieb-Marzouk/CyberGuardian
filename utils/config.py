@@ -104,6 +104,12 @@ class ScanConfig:
     eventlog_enabled: bool = True
     eventlog_lookback_hours: int = 24
 
+    # Online hash reputation (VirusTotal) is rate limited; opt-in only.
+    online_reputation: bool = False
+
+    # Persisted default for the "deep analysis" option.
+    deep_analysis: bool = False
+
 
 @dataclass
 class APIConfig:
@@ -135,6 +141,7 @@ class APIConfig:
 class UIConfig:
     """User interface configuration."""
     theme: str = "cyber_dark"
+    language: str = "en"  # en | fr
     primary_color: str = "#00ff9d"
     secondary_color: str = "#00b8ff"
     background_color: str = "#0a0f0f"

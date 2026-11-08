@@ -44,28 +44,158 @@ class Verdict(Enum):
     UNKNOWN = "unknown"
 
 
+def _escape_control_chars(text: str) -> str:
+    """Escape raw newlines/tabs that models put inside JSON strings."""
+    out = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                out.append(char)
+                escaped = False
+            elif char == "\\":
+                out.append(char)
+                escaped = True
+            elif char == '"':
+                out.append(char)
+                in_string = False
+            elif char == "\n":
+                out.append("\\n")
+            elif char == "\r":
+                out.append("\\r")
+            elif char == "\t":
+                out.append("\\t")
+            elif ord(char) < 32:
+                out.append("\\u%04x" % ord(char))
+            else:
+                out.append(char)
+        else:
+            if char == '"':
+                in_string = True
+            out.append(char)
+    return "".join(out)
+
+
+def _extract_object(text: str):
+    """Return (fragment, truncated) for the outermost JSON object."""
+    start = text.find("{")
+    if start == -1:
+        return text, False
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:index + 1], False
+    return text[start:], True
+
+
+def _close_truncated(fragment: str) -> str:
+    """Close a response cut off by the token limit."""
+    import re
+    in_string = False
+    escaped = False
+    stack = []
+    for char in fragment:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "{[(":
+            stack.append("}" if char == "{" else "]" if char == "[" else ")")
+        elif char in "}])":
+            if stack:
+                stack.pop()
+
+    repaired = fragment.rstrip()
+    if in_string:
+        repaired += '"'
+    repaired = re.sub(r",\s*$", "", repaired)
+    repaired = re.sub(r":\s*$", ': ""', repaired)
+    repaired += "".join(reversed(stack))
+    repaired = re.sub(r",\s*([}\]])(?!.*[{\[])", r"\1", repaired)
+    return repaired
+
+
+def _salvage_fields(text: str) -> Dict[str, Any]:
+    """Recover complete key/value pairs even when the tail is broken."""
+    import re
+    decoder = json.JSONDecoder()
+    found: Dict[str, Any] = {}
+    for key in (
+        "verdict", "confidence", "summary", "detailed_analysis", "recommendations",
+        "indicators", "risk_score", "threat_type", "mitre_techniques",
+        "severity_justification", "verification_steps", "containment_steps",
+        "remediation_steps", "validation_steps",
+    ):
+        match = re.search(rf'"{key}"\s*:\s*', text)
+        if not match:
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, match.end())
+        except Exception:
+            continue
+        found[key] = value
+    return found
+
+
 def _loads_json_tolerant(text: str) -> Dict[str, Any]:
-    """Parse model output as JSON, repairing common formatting mistakes."""
+    """Parse model output as JSON, repairing the usual model mistakes.
+
+    Handles code fences, raw newlines inside strings, trailing commas and
+    responses truncated by the token limit; as a last resort it recovers every
+    complete key/value pair it can and returns that partial analysis.
+    """
     import ast
     import re as _re
 
-    candidates = [text]
-    # Raw control characters are illegal inside JSON strings.
-    candidates.append("".join(
-        ch for ch in text if ch in ("\n", "\t", "\r") or ord(ch) >= 32
-    ))
-    # Trailing commas before a closing brace or bracket.
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = _re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = _re.sub(r"\s*```$", "", cleaned)
+
+    escaped = _escape_control_chars(cleaned)
+    fragment, truncated = _extract_object(escaped)
+
+    candidates = [fragment]
+    if truncated:
+        candidates.append(_close_truncated(fragment))
     candidates.append(_re.sub(r",\s*([}\]])", r"\1", candidates[-1]))
 
     last_error: Exception = ValueError("empty response")
     for candidate in candidates:
         for strict in (True, False):
             try:
-                return json.loads(candidate, strict=strict)
+                value = json.loads(candidate, strict=strict)
+                if isinstance(value, dict):
+                    return value
             except Exception as exc:
                 last_error = exc
 
-    # Python-style dict (single quotes): only literals are rewritten.
+    salvaged = _salvage_fields(fragment)
+    if salvaged:
+        return salvaged
+
     normalized = candidates[-1]
     normalized = _re.sub(r"\btrue\b", "True", normalized)
     normalized = _re.sub(r"\bfalse\b", "False", normalized)
@@ -556,7 +686,18 @@ Provide your analysis in the following JSON format:
     "validation_steps": ["Ordered steps to verify the threat is gone"]
 }}
 
-Respond ONLY with valid JSON. Be thorough and specific in your analysis."""
+Respond ONLY with valid JSON. Escape every newline inside a string as \\n, never break a JSON string across lines, keep arrays to at most 6 items and detailed_analysis under 200 words."""
+
+        language = str(detection_data.get("language", "en")).lower()
+        if language == "fr":
+            prompt += (
+                "\n\n=== LANGUAGE ===\n"
+                "Write every human-readable value in French (français): summary, "
+                "detailed_analysis, recommendations, indicators, severity_justification "
+                "and all four step lists. Keep JSON keys, verdict enum values, MITRE "
+                "technique IDs, file paths, command lines and rule names unchanged. "
+                "The entire report must be readable by a French-speaking user."
+            )
 
         return prompt
     
@@ -729,7 +870,7 @@ Respond ONLY with valid JSON. Be thorough and specific in your analysis."""
             mitre_techniques=[],
             severity_justification=f"Response was not in expected JSON format. Error: {error_msg}",
             raw_response={'raw': response_text[:2000], 'parse_error': error_msg},
-            error=f"JSON parse error: {error_msg}"
+            error=None
         )
     
     def _call_deepseek(self, prompt: str, detection_data: Dict[str, Any]) -> AnalysisResult:
@@ -753,7 +894,7 @@ Respond ONLY with valid JSON. Be thorough and specific in your analysis."""
                 {'role': 'user', 'content': prompt}
             ],
             'temperature': 0.3,
-            'max_tokens': 2000
+            'max_tokens': 4096
         }
         
         try:
@@ -814,7 +955,7 @@ Respond ONLY with valid JSON. Be thorough and specific in your analysis."""
                 {'role': 'user', 'content': prompt}
             ],
             'temperature': 0.3,
-            'max_tokens': 2000
+            'max_tokens': 4096
         }
         
         try:

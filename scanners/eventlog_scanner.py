@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from scanners.evidence import merge_evidence, event_payload
 from scanners.base_scanner import (
     BaseScanner, Detection, RiskLevel, ScanResult, ScanStatus,
 )
@@ -314,6 +315,7 @@ class EventLogScanner(BaseScanner):
                     result.status = ScanStatus.CANCELLED
                     break
                 for detection in self._analyze(record):
+                    merge_evidence(detection, "event", event_payload(record))
                     result.add_detection(detection)
                     self._report_detection(detection)
                     log_detection(

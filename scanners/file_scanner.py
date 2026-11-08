@@ -20,12 +20,13 @@ import struct
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from scanners.evidence import merge_evidence, file_payload
 from scanners.base_scanner import (
     BaseScanner, ScanResult, ScanStatus, Detection, RiskLevel
 )
 from scanners.yara_manager import get_yara_manager, YaraMatch
 from utils.whitelist import get_whitelist
-from utils.config import get_config
+from utils.config import get_config, APP_DIR
 from utils.logging_utils import get_logger, log_scan_start, log_scan_complete, log_detection
 from threat_intel.intel import get_threat_intel
 
@@ -1024,6 +1025,8 @@ class FileScanner(BaseScanner):
 
                 # Run detections
                 detections = self._analyze_file(file_info)
+                for detection in detections:
+                    merge_evidence(detection, "file", file_payload(file_info))
 
                 for detection in detections:
                     result.add_detection(detection)
@@ -1042,6 +1045,7 @@ class FileScanner(BaseScanner):
                 if deep_analysis and self._memory_analyzer and filepath.suffix.lower() in self.EXECUTABLE_EXTENSIONS:
                     memory_detections = self._analyze_running_file_memory(filepath, detections)
                     for detection in memory_detections:
+                        merge_evidence(detection, "file", file_payload(file_info))
                         result.add_detection(detection)
                         self._report_detection(detection)
                         log_detection(
@@ -1055,7 +1059,9 @@ class FileScanner(BaseScanner):
 
             result.clean_items = max(0, result.total_items - len(flagged))
 
-            result.status = ScanStatus.COMPLETED
+            if result.status != ScanStatus.CANCELLED:
+
+                result.status = ScanStatus.COMPLETED
             
         except Exception as e:
             self.logger.error(f"File scan error: {e}")
@@ -1274,8 +1280,17 @@ class FileScanner(BaseScanner):
         def _on_error(exc):
             self.logger.debug(f"Skipping unreadable path: {exc}")
 
+        # Never scan CyberGuardian's own directory: its rule files and tests
+        # intentionally contain malware strings, and the install folder is not a
+        # user-data location.
+        app_root = os.path.normcase(os.path.abspath(str(APP_DIR)))
+
+        def inside_app(path: Path) -> bool:
+            normalised = os.path.normcase(os.path.abspath(str(path)))
+            return normalised == app_root or normalised.startswith(app_root + os.sep)
+
         if target.is_file():
-            if self._is_regular_file(target):
+            if self._is_regular_file(target) and not inside_app(target):
                 files.append(target)
 
         elif target.is_dir():
@@ -1283,11 +1298,12 @@ class FileScanner(BaseScanner):
                 dirnames[:] = [
                     d for d in dirnames
                     if not self._is_reparse_point(Path(root) / d)
+                    and not inside_app(Path(root) / d)
                 ]
 
                 for filename in filenames:
                     filepath = Path(root) / filename
-                    if self._is_regular_file(filepath):
+                    if self._is_regular_file(filepath) and not inside_app(filepath):
                         files.append(filepath)
 
                 if len(files) >= max_files:
@@ -1505,7 +1521,14 @@ class FileScanner(BaseScanner):
         if not file_info.sha256:
             return detections
         
-        hash_result = self.threat_intel.lookup_hash(file_info.sha256, use_online=True)
+        online_enabled = False
+        try:
+            online_enabled = bool(get_config().config.scan.online_reputation)
+        except Exception:
+            pass
+        hash_result = self.threat_intel.lookup_hash(
+            file_info.sha256, use_online=online_enabled
+        )
         
         if hash_result.is_malicious and hash_result.confidence in ['high', 'medium']:
             risk_level = RiskLevel.CRITICAL if hash_result.confidence == 'high' else RiskLevel.HIGH

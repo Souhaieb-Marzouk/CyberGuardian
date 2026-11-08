@@ -11,7 +11,11 @@ button; all business logic lives in ``core/``.
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
+import subprocess
+import webbrowser
+
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget, QTableWidget,
@@ -24,6 +28,7 @@ from core.reputation import check_target
 from core.software import audit, get_installed_software
 from core.startup import enumerate_startup, set_enabled
 from utils.logging_utils import get_logger
+from utils.i18n import tr
 
 logger = get_logger("ui.tools_dialog")
 
@@ -61,6 +66,43 @@ def _table(headers: list[str]) -> QTableWidget:
     return table
 
 
+class _SoftwareWorker(QThread):
+    """Run the software audit (including winget) off the GUI thread."""
+
+    done = pyqtSignal(object, str)
+
+    def run(self):
+        try:
+            from core.software import audit, get_installed_software
+            entries = audit(get_installed_software(), check_updates=True)
+            self.done.emit(entries, "")
+        except Exception as exc:  # pragma: no cover - defensive
+            self.done.emit([], str(exc))
+
+
+class _UpdateWorker(QThread):
+    """Run one winget upgrade off the GUI thread."""
+
+    done = pyqtSignal(bool, str)
+
+    def __init__(self, package_id: str):
+        super().__init__()
+        self.package_id = package_id
+
+    def run(self):
+        try:
+            from core.software import build_winget_upgrade_command
+            command = build_winget_upgrade_command(self.package_id, "winget")
+            completed = subprocess.run(
+                command, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=900,
+            )
+            output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+            self.done.emit(completed.returncode == 0, output[-1500:])
+        except Exception as exc:  # pragma: no cover - environment dependent
+            self.done.emit(False, str(exc))
+
+
 class ToolsDialog(QDialog):
     """Tabbed toolbox for startup, software, reputation, canaries and quarantine."""
 
@@ -71,6 +113,43 @@ class ToolsDialog(QDialog):
         self._startup_entries = []
         self._software_entries = []
 
+        # Explicit palette: the dialog is opened from a themed Studio window and
+        # used to inherit light text on light tab backgrounds in dark mode.
+        self.setStyleSheet(f"""
+            QDialog {{ background: {COLORS['bg']}; color: {COLORS['text']}; }}
+            QLabel {{ color: {COLORS['text']}; }}
+            QTabWidget::pane {{ border: 1px solid {COLORS['border']}; border-radius: 8px; }}
+            QTabBar::tab {{
+                background: {COLORS['card']}; color: {COLORS['text']};
+                border: 1px solid {COLORS['border']};
+                border-bottom: none; border-top-left-radius: 8px;
+                border-top-right-radius: 8px; padding: 8px 16px; margin-right: 2px;
+            }}
+            QTabBar::tab:selected {{
+                background: {COLORS['primary']}; color: #ffffff; font-weight: 700;
+            }}
+            QTabBar::tab:hover {{ color: {COLORS['primary']}; }}
+            QPushButton {{
+                background: {COLORS['card']}; color: {COLORS['text']};
+                border: 1px solid {COLORS['border']}; border-radius: 8px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{ border-color: {COLORS['primary']}; }}
+            QLineEdit, QTextEdit, QComboBox {{
+                background: {COLORS['card']}; color: {COLORS['text']};
+                border: 1px solid {COLORS['border']}; border-radius: 8px; padding: 6px;
+            }}
+            QCheckBox {{ color: {COLORS['text']}; }}
+            QTableWidget {{
+                background: {COLORS['card']}; color: {COLORS['text']};
+                gridline-color: {COLORS['border']};
+            }}
+            QHeaderView::section {{
+                background: {COLORS['bg']}; color: {COLORS['text']};
+                border: 1px solid {COLORS['border']}; padding: 4px;
+            }}
+        """)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
@@ -80,11 +159,11 @@ class ToolsDialog(QDialog):
         layout.addWidget(title)
 
         tabs = QTabWidget()
-        tabs.addTab(self._build_startup_tab(), "Startup")
-        tabs.addTab(self._build_software_tab(), "Software")
-        tabs.addTab(self._build_check_tab(), "Check a file or link")
-        tabs.addTab(self._build_canary_tab(), "Ransomware canaries")
-        tabs.addTab(self._build_quarantine_tab(), "Quarantine")
+        tabs.addTab(self._build_startup_tab(), tr("tools.tab.startup"))
+        tabs.addTab(self._build_software_tab(), tr("tools.tab.software"))
+        tabs.addTab(self._build_check_tab(), tr("tools.tab.check"))
+        tabs.addTab(self._build_canary_tab(), tr("tools.tab.canary"))
+        tabs.addTab(self._build_quarantine_tab(), tr("tools.tab.quarantine"))
         layout.addWidget(tabs, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
@@ -96,13 +175,14 @@ class ToolsDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        self.startup_table = _table(["Name", "Impact", "Source", "State", "Publisher"])
+        self.startup_table = _table([tr("tools.col.name"), tr("tools.col.impact"), tr("tools.col.source"),
+                tr("tools.col.state"), tr("tools.col.publisher")])
         layout.addWidget(self.startup_table, 1)
 
         row = QHBoxLayout()
-        row.addWidget(_button("Refresh", self.refresh_startup))
-        row.addWidget(_button("Disable selected", lambda: self._toggle_startup(False)))
-        row.addWidget(_button("Enable selected", lambda: self._toggle_startup(True)))
+        row.addWidget(_button(tr("tools.refresh"), self.refresh_startup))
+        row.addWidget(_button(tr("tools.disable"), lambda: self._toggle_startup(False)))
+        row.addWidget(_button(tr("tools.enable"), lambda: self._toggle_startup(True)))
         row.addStretch(1)
         layout.addLayout(row)
         self.refresh_startup()
@@ -156,29 +236,123 @@ class ToolsDialog(QDialog):
     def _build_software_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.software_table = _table(["Application", "Installed", "Safe from", "Status"])
+        self.software_table = _table([tr("tools.col.application"), tr("tools.col.installed"), tr("tools.col.latest"),
+                tr("tools.col.status"), tr("tools.col.action")])
         layout.addWidget(self.software_table, 1)
         row = QHBoxLayout()
-        row.addWidget(_button("Refresh", self.refresh_software))
+        row.addWidget(_button(tr("tools.check_updates"), lambda: self.refresh_software(check_updates=True), primary=True))
+        row.addWidget(_button(tr("tools.refresh"), self.refresh_software))
         row.addStretch(1)
+        self.software_status = QLabel("")
+        self.software_status.setStyleSheet(f"color: {COLORS['muted']}; font-size: 11px;")
+        row.addWidget(self.software_status)
         layout.addLayout(row)
         self.refresh_software()
         return page
 
-    def refresh_software(self):
-        self.software_table.setRowCount(0)
+    def refresh_software(self, check_updates: bool = False):
+        if check_updates:
+            self.software_status.setText("Checking Windows Package Manager…")
+            self._software_worker = _SoftwareWorker()
+            self._software_worker.done.connect(self._software_loaded)
+            self._software_worker.start()
+            return
         try:
             self._software_entries = audit(get_installed_software())
         except Exception as exc:  # pragma: no cover
             QMessageBox.warning(self, "Software", f"Could not read installed software: {exc}")
             return
+        self._render_software()
+
+    def _software_loaded(self, entries, error):
+        if error:
+            self.software_status.setText(f"Update check failed: {error}")
+            return
+        self._software_entries = entries
+        self._render_software()
+        updates = sum(1 for entry in entries if entry.status == "update_available")
+        self.software_status.setText(
+            f"{updates} update(s) available" if updates else "Everything is up to date"
+        )
+
+    def _render_software(self):
+        self.software_table.setRowCount(0)
         for entry in self._software_entries:
             row = self.software_table.rowCount()
             self.software_table.insertRow(row)
-            values = [entry.name, entry.version or "—", entry.min_version or "—",
-                      entry.status.replace("_", " ")]
+            latest = entry.latest_version or entry.min_version or "—"
+            status = {
+                "update_available": "Update available",
+                "current": "Up to date",
+                "unknown": "Not tracked",
+            }.get(entry.status, entry.status.replace("_", " "))
+            values = [entry.name, entry.version or "—", latest, status]
             for column, value in enumerate(values):
-                self.software_table.setItem(row, column, QTableWidgetItem(str(value)))
+                item = QTableWidgetItem(str(value))
+                if column == 3:
+                    colour = {
+                        "Update available": COLORS["medium"],
+                        "Up to date": COLORS["primary"],
+                    }.get(status)
+                    if colour:
+                        item.setForeground(QColor(colour))
+                self.software_table.setItem(row, column, item)
+
+            if entry.status == "update_available":
+                action = _button(
+                    tr("tools.update"),
+                    lambda _=False, e=entry: self._update_software(e),
+                    primary=True,
+                )
+                action.setObjectName("rowAction")
+                self.software_table.setCellWidget(row, 4, action)
+
+    def _update_software(self, entry):
+        from core.software import is_safe_package_id
+
+        if not entry.package_id:
+            if entry.advisory_url:
+                webbrowser.open(entry.advisory_url)
+            else:
+                QMessageBox.information(
+                    self, "Update",
+                    "No package source is known for this application. "
+                    "Open the vendor website to update it manually.",
+                )
+            return
+
+        if not is_safe_package_id(entry.package_id):
+            QMessageBox.warning(self, "Update", "This package id looks unsafe; refusing to run it.")
+            return
+
+        confirm = QMessageBox.question(
+            self, "Update application",
+            f"Update {entry.name}?\n\n"
+            f"Installed: {entry.version or 'unknown'}\n"
+            f"Available: {entry.latest_version or 'unknown'}\n"
+            f"Package: {entry.package_id}\n\n"
+            "Windows Package Manager will run silently and may ask for administrator rights.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        self.software_status.setText(f"Updating {entry.name}…")
+        self._update_worker = _UpdateWorker(entry.package_id)
+        self._update_worker.done.connect(lambda ok, out, name=entry.name: self._update_done(ok, out, name))
+        self._update_worker.start()
+
+    def _update_done(self, ok: bool, output: str, name: str):
+        if ok:
+            self.software_status.setText(f"{name} updated. Re-checking…")
+            QMessageBox.information(self, "Update", f"{name} was updated successfully.")
+            self.refresh_software(check_updates=True)
+        else:
+            self.software_status.setText(f"Update failed for {name}")
+            QMessageBox.warning(
+                self, "Update failed",
+                f"Windows Package Manager could not update {name}.\n\n{output[-800:]}",
+            )
 
     # -------------------------------------------------------------------- check
     def _build_check_tab(self) -> QWidget:
@@ -194,8 +368,8 @@ class ToolsDialog(QDialog):
         self.check_input = QLineEdit()
         self.check_input.setPlaceholderText("https://example.com or C:\\Downloads\\file.exe")
         row.addWidget(self.check_input, 1)
-        row.addWidget(_button("Browse…", self._browse_file))
-        row.addWidget(_button("Check", self.run_check, primary=True))
+        row.addWidget(_button(tr("tools.browse"), self._browse_file))
+        row.addWidget(_button(tr("tools.check"), self.run_check, primary=True))
         layout.addLayout(row)
 
         self.check_result = QTextEdit()
@@ -248,9 +422,9 @@ class ToolsDialog(QDialog):
         layout.addWidget(text)
 
         row = QHBoxLayout()
-        row.addWidget(_button("Install canaries", self._install_canaries, primary=True))
-        row.addWidget(_button("Check now", self._check_canaries))
-        row.addWidget(_button("Remove", self._remove_canaries))
+        row.addWidget(_button(tr("tools.install"), self._install_canaries, primary=True))
+        row.addWidget(_button(tr("tools.check_now"), self._check_canaries))
+        row.addWidget(_button(tr("tools.remove"), self._remove_canaries))
         row.addStretch(1)
         layout.addLayout(row)
 
@@ -309,13 +483,14 @@ class ToolsDialog(QDialog):
     def _build_quarantine_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.quarantine_table = _table(["File", "Original path", "Size", "Quarantined"])
+        self.quarantine_table = _table([tr("tools.col.file"), tr("tools.col.original"), tr("tools.col.size"),
+                tr("tools.col.quarantined")])
         layout.addWidget(self.quarantine_table, 1)
 
         row = QHBoxLayout()
-        row.addWidget(_button("Refresh", self.refresh_quarantine))
-        row.addWidget(_button("Restore selected", self._restore_selected, primary=True))
-        row.addWidget(_button("Delete permanently", self._delete_selected))
+        row.addWidget(_button(tr("tools.refresh"), self.refresh_quarantine))
+        row.addWidget(_button(tr("tools.restore"), self._restore_selected, primary=True))
+        row.addWidget(_button(tr("tools.delete"), self._delete_selected))
         row.addStretch(1)
         layout.addLayout(row)
         self.refresh_quarantine()

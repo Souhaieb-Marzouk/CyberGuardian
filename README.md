@@ -13,6 +13,22 @@
 
 *A transparent, educational, and highly customizable security tool for everyone*
 
+---
+
+## 👤 Author
+
+**Designed & architected by [Souhaieb Marzouk](https://github.com/Souhaieb-Marzouk).**
+
+| | |
+|---|---|
+| **Author** | Souhaieb Marzouk |
+| **Project** | [github.com/Souhaieb-Marzouk/CyberGuardian](https://github.com/Souhaieb-Marzouk/CyberGuardian) |
+| **Releases** | [github.com/Souhaieb-Marzouk/CyberGuardian/releases](https://github.com/Souhaieb-Marzouk/CyberGuardian/releases) |
+| **License** | MIT — see [LICENSE](LICENSE) |
+
+© 2026 Souhaieb Marzouk. All rights reserved.
+
+
 ## 💖 Support the Project
 
 This project is maintained in my free time. If you find it helpful, please consider supporting its continued development.

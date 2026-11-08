@@ -16,6 +16,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 import threading
 
+from scanners.evidence import merge_evidence, registry_payload
 from scanners.base_scanner import (
     BaseScanner, ScanResult, ScanStatus, Detection, RiskLevel
 )
@@ -213,7 +214,9 @@ class RegistryScanner(BaseScanner):
                 self._report_progress(i + 1, len(entries), f"Analyzing {entry.key_path}")
                 
                 detections = self._analyze_entry(entry)
-                
+                for detection in detections:
+                    merge_evidence(detection, "registry", registry_payload(entry))
+
                 for detection in detections:
                     result.add_detection(detection)
                     self._report_detection(detection)
@@ -225,7 +228,8 @@ class RegistryScanner(BaseScanner):
                     )
             
             result.finalize_counts()
-            result.status = ScanStatus.COMPLETED
+            if result.status != ScanStatus.CANCELLED:
+                result.status = ScanStatus.COMPLETED
 
         except Exception as e:
             self.logger.error(f"Registry scan error: {e}")
