@@ -1,199 +1,107 @@
 # Contributing to CyberGuardian
 
-Thank you for your interest in contributing to CyberGuardian! This document provides guidelines and instructions for contributing.
+Thanks for helping improve CyberGuardian. This project is a defensive Windows
+security tool: changes must be testable, explainable and safe by default.
 
-## Table of Contents
+## Development setup
 
-- [Code of Conduct](#code-of-conduct)
-- [Getting Started](#getting-started)
-- [Development Setup](#development-setup)
-- [How to Contribute](#how-to-contribute)
-- [Coding Standards](#coding-standards)
-- [Commit Guidelines](#commit-guidelines)
-- [Pull Request Process](#pull-request-process)
-
----
-
-## Code of Conduct
-
-By participating in this project, you agree to maintain a respectful and inclusive environment. Please be considerate of others and follow standard open-source community guidelines.
-
----
-
-## Getting Started
-
-1. Fork the repository on GitHub
-2. Clone your fork locally
-3. Create a new branch for your changes
-4. Make your contributions
-5. Submit a pull request
-
----
-
-## Development Setup
-
-### Prerequisites
-
-- Python 3.9 or higher
-- Git
-- Windows 10/11 (for full functionality testing)
-
-### Setup Steps
-
-```bash
-# Clone your fork
+```powershell
 git clone https://github.com/Souhaieb-Marzouk/CyberGuardian.git
-cd cyberguardian
-
-# Create virtual environment
-python -m venv venv
-venv\Scripts\activate
-
-# Install development dependencies
-pip install -e ".[dev]"
-
-# Run the application
-python main.py
+cd CyberGuardian
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install pyinstaller        # only needed for packaging
+python main.py                 # Studio interface
 ```
 
-### Run Tests
+Python 3.12 is recommended. Python 3.14 is not supported by `yara-python`.
 
-```bash
-# Run all tests
-python -m pytest tests/
+## Tests
 
-# Run with coverage
-python -m pytest --cov=. tests/
+The suite uses `unittest` and runs headless:
+
+```powershell
+python -m unittest discover -s tests -t . -v
 ```
 
----
+Guidelines:
 
-## How to Contribute
+- add a regression test for every bug fix;
+- keep UI tests offscreen (`QT_QPA_PLATFORM=offscreen` is set by the tests);
+- for YARA changes, run `tests/test_yara_rules.py` — it enforces precision on benign
+  files and true positives for representative malware patterns;
+- for localisation changes, run `tests/test_i18n.py` — the English and French
+  catalogs must have the same keys and placeholders.
 
-### Reporting Bugs
+## Where to change what
 
-1. Check existing issues to avoid duplicates
-2. Create a new issue with:
-   - Clear description of the bug
-   - Steps to reproduce
-   - Expected behavior
-   - Actual behavior
-   - System information (Windows version, Python version)
-   - Screenshots if applicable
+| Area | Location |
+|---|---|
+| Scanner logic | `scanners/` (subclass `BaseScanner`, emit `Detection` with evidence) |
+| Evidence fields | `scanners/evidence.py` |
+| YARA rules | `scanners/default_rules.py` (+ bump `BUILTIN_RULES_VERSION`) |
+| Studio pages | `ui/studio.py` |
+| Finding dialog / VirusTotal tab | `ui/findings.py` |
+| Canaries | `core/canary.py`, `ui/canaries.py` |
+| AI prompt and parsing | `ai_analysis/analyzer.py` |
+| Reports/exports | `reporting/` |
+| Language strings | `utils/i18n.py` |
+| Attribution/version | `core/branding.py`, `build.py` |
 
-### Suggesting Features
+## Adding a language string
 
-1. Check existing issues for similar suggestions
-2. Create a new issue with:
-   - Clear description of the feature
-   - Use case and benefits
-   - Possible implementation approach
+1. add the key to both `CATALOG["en"]` and `CATALOG["fr"]` in `utils/i18n.py`;
+2. keep `{placeholders}` identical in both languages;
+3. use `tr("key", value=...)` in the UI;
+4. run `tests/test_i18n.py`.
 
----
+Evidence field labels also go through `field_label()` and `FIELD_LABELS_FR`.
 
-## Commit Guidelines
+## Adding a YARA rule
 
-### Commit Message Format
+- put it in `scanners/default_rules.py` under the right file;
+- require a real PE header for binary rules and non-PE content for script rules;
+- use at least two specific indicators, never a single generic API or word;
+- mark ambiguous heuristics `low` so they are recorded but not reported;
+- bump `BUILTIN_RULES_VERSION` in `scanners/yara_manager.py` so existing installs
+  refresh;
+- add a true-positive test and a benign-file check in `tests/test_yara_rules.py`.
 
-```
-type(scope): subject
-
-body (optional)
-
-footer (optional)
-```
-
-### Types
-
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation changes
-- `style`: Code style changes (formatting, etc.)
-- `refactor`: Code refactoring
-- `test`: Adding or updating tests
-- `chore`: Maintenance tasks
-
-### Examples
+## Commit style
 
 ```
-feat(scanner): add deep analysis mode for process scanning
+type(scope): short summary
 
-- Windows Event Log analysis
-- PowerShell history analysis
-- DNS cache inspection
-
-Closes #123
+- what changed and why
+- user-visible impact
 ```
 
+Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `chore`.
+
+Examples:
+
 ```
-fix(ai): handle empty API response gracefully
-
-Fixes crash when AI provider returns empty content.
+fix(scanner): keep cancelled status after a stopped scan
+feat(ui): add VirusTotal tab with HTML export
+docs: rewrite README for the Studio release
 ```
 
----
+## Pull requests
 
-## Pull Request Process
+1. branch from `main` (`feature/…`, `fix/…`, `docs/…`);
+2. keep the change focused and add tests;
+3. run the full suite and the packaging build if you touched dependencies;
+4. update `CHANGELOG.md` for user-visible changes;
+5. describe the problem, the approach and how you tested it.
 
-1. **Create a feature branch**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
+CI runs on Windows for Python 3.10 and 3.12 and must be green before merge.
 
-2. **Make your changes**
-   - Follow coding standards
-   - Add tests for new functionality
-   - Update documentation
+## Security issues
 
-3. **Commit your changes**
-   ```bash
-   git add .
-   git commit -m "feat: description of your changes"
-   ```
+Do not open a public issue. Follow [SECURITY.md](SECURITY.md).
 
-4. **Push to your fork**
-   ```bash
-   git push origin feature/your-feature-name
-   ```
+## Licence
 
-5. **Create Pull Request**
-   - Go to the original repository
-   - Click "New Pull Request"
-   - Select your branch
-   - Fill in the PR template
-
-6. **PR Requirements**
-   - All tests pass
-   - Code follows style guidelines
-   - Documentation updated
-   - No merge conflicts
-
-7. **Review Process**
-   - Maintainers will review your PR
-   - Address any feedback
-   - Once approved, it will be merged
-
----
-
-## Project Structure
-
-See [README.md](README.md) for the complete project structure.
-
-Key directories:
-- `scanners/` - Detection engines
-- `ai_analysis/` - AI integration
-- `ui/` - User interface
-- `utils/` - Utility functions
-- `tests/` - Test files
-
----
-
-## Getting Help
-
-- Open an issue for questions
-- Check existing documentation
-- Review closed issues for solutions
-
----
-
-Thank you for contributing to CyberGuardian!
+By contributing you agree that your changes are released under the project's MIT
+License.

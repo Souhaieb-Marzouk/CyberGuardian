@@ -1,130 +1,63 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
 .Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging and builds
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-*.manifest
 *.spec
-build/
+*.manifest
+*.egg-info/
+.eggs/
+wheels/
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
+# Test and coverage artifacts
+.pytest_cache/
 .coverage
 .coverage.*
-.cache
-nosetests.xml
+htmlcov/
 coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
+tests/_tmp_*/
 
-# Translations
-*.mo
-*.pot
+# Runtime data (created on first launch)
+config/
+data/
+cache/
+logs/
+reports/
+yara_rules/
+quarantine/
+secure/
+*.log
 
-# Environments
+# Secrets — never commit
 .env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+*.pem
+*.key
+secrets.json
+.credentials
 
-# IDE
+# Editors and OS files
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-.project
-.pydevproject
-.settings/
-
-# macOS
 .DS_Store
-.AppleDouble
-.LSOverride
-
-# Windows
 Thumbs.db
-ehthumbs.db
 Desktop.ini
 
-# CyberGuardian specific
-data/
-logs/
-*.log
-quarantine/
-config.json
-CyberGuardian.spec
-install_deps.py
-run.bat
-setup.py
-setup_windows.bat
-version_info.txt
-secure/
-.credentials
-
-# API Keys (NEVER commit these)
-*.pem
-*.key
-secrets.json
-
-# Compiled executables
-*.exe
-
-# Yara rules (user downloaded)
-!yara_rules/.gitkeep
-
-# Temporary files
+# Local scratch
 tmp/
 temp/
 *.tmp
 *.bak
-# Runtime directories created when running from source
-config/
-reports/
-cache/
-yara_rules/*.yar
-
-# Local design studies (not shipped)
-main_v2.py
-main_d3.py
-main_d4.py
-ui/shell.py
-ui/design3.py
-ui/design4.py
-docs/design/design3-command-center.png
-docs/design/design4-studio.png
-
-# Generated at runtime by the bundled YARA rules
-yara_rules/
-

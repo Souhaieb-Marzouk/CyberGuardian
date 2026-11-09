@@ -3,6 +3,68 @@
 All notable changes to CyberGuardian are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-11-09
+
+### Added
+
+- **Studio interface**: seven-page shell (Overview, Scans, Findings, Canaries,
+  Tools, Logs, Settings) with light/dark themes, bundled Inter, remembered window
+  geometry and a dedicated design system (`ui/design_common.py`).
+- **English/French localisation** for the UI, dialogs, canary guidance, VirusTotal
+  labels and AI reports; language selector in Settings, persisted as `ui.language`.
+- **Finding drill-down**: event-field table, process-tree banner, remediation,
+  AI and VirusTotal tabs; scan tables now expose process name, PID, PPID, parent,
+  user, rule, confidence and path.
+- **Rich evidence** attached by every scanner (`scanners/evidence.py`): process,
+  file, network, registry and event-log context, reused by the UI, CSV/JSON export
+  and the AI prompt.
+- **VirusTotal Check tab**: hashes, URLs, domains and public IPs, verdict table,
+  HTML export and automatic inclusion in the AI analysis.
+- **Persistent triage**: AI and VirusTotal results are cached per finding, survive
+  closing the dialog and export as standalone HTML reports.
+- **Ransomware canaries 2.0**: realistic DOCX/XLSX/CSV/TXT decoys in Documents,
+  Desktop, Downloads, OneDrive and Public; detection of modification, rename,
+  deletion and encryption; tray alerts and a full incident report with timeline
+  and response guide (EN/FR).
+- **Software updates**: winget-based latest-version detection, advisory feed and a
+  guarded per-application update action.
+- **Branding**: author attribution, About dialog, legal/licence notices, report
+  footers and README attribution (designed & architected by Souhaieb Marzouk).
+- **Documentation set**: rewritten README, user guide, architecture, build and
+  security policy; archived release notes under `docs/releases/`.
+
+### Changed
+
+- Scans can be stopped reliably; `CANCELLED` status is preserved in every scanner.
+- Process scans are much faster: signature check runs first, trusted-signed
+  binaries skip hashing/YARA/VirusTotal, YARA has a time budget and online
+  reputation is opt-in.
+- YARA engine rewritten for precision: PE/script gating, multi-indicator rules,
+  generic heuristics demoted to `low`, unreliable rules removed, versioned
+  refresh (v8) and application directory excluded from scans.
+- `main.py` now launches the Studio interface by default; the CLI is still
+  available with `--cli`.
+- AI responses are repaired when truncated or malformed, and the AI/VirusTotal
+  dialogs keep their results while the scan output exists.
+
+### Fixed
+
+- YARA results were silently dropped due to a `StringMatch` API mismatch.
+- Stop button missing and scanners overwriting `CANCELLED` with `COMPLETED`.
+- Tools dialog unreadable tabs in dark mode.
+- Health gauge layout and the misleading score of 100 before any scan.
+- Settings (deep analysis, online reputation) reset on theme change; theme switch
+  reset the window size.
+- AI JSON parse failures on truncated or multi-line responses.
+- Export crash (`title_text`) on the scan pages.
+
+### Security
+
+- YARA rules tightened to remove critical false positives on clean binaries and
+  documentation.
+- HTML reports escape all scanned content (stored-XSS fix).
+- AI prompts treat scan content as untrusted data; output is clamped.
+
 ## [1.4.2] - 2026-11-01
 
 ### Fixed

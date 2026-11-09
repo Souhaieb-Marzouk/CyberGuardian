@@ -7,7 +7,7 @@ A comprehensive security scanner for detecting malware, suspicious processes,
 registry persistence, and network threats.
 
 Usage:
-    python main.py                    # Launch GUI
+    python main.py                    # Launch the Studio GUI
     python main.py --cli --scan-all   # CLI full scan
     python main.py --cli --process    # CLI process scan only
     python main.py --help             # Show help
@@ -376,8 +376,8 @@ def main():
     
     # GUI mode (default)
     else:
-        from ui.main_window import run_application
-        run_application()
+        from ui.studio import run
+        run()
 
 
 if __name__ == '__main__':
