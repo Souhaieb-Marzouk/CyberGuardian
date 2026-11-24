@@ -28,6 +28,14 @@ This project follows [Semantic Versioning](https://semver.org/).
 - **Capture report export** — export the current connection snapshot as CSV or
   JSON.
 
+### Fixed
+
+- The live traffic table no longer jumps back to the first row when new
+  connections arrive: the vertical and horizontal scroll positions are restored
+  after every refresh.
+- Suspicious connections are now tinted (amber/red) and labelled **Suspicious**
+  in the risk column, with a bold label and the reasons in the tooltip.
+
 ### Changed
 
 - `APP_VERSION`/`build.py` bumped to 1.6.0.

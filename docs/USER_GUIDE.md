@@ -155,7 +155,7 @@ network adapter at the top (or *Toutes les interfaces*), and use **Pause** /
 
 - **Download / Upload** — current throughput of the selected adapter.
 - **Connections** — active connections and listening services.
-- **To review** — connections that match a risk hint.
+- **Suspicious** — connections that match a risk hint (highlighted row).
 - A live chart of the last minute of traffic.
 - A table with the application, remote endpoint, service, protocol, state and
   age of each connection.
@@ -168,7 +168,7 @@ The risk labels are deliberately calm:
 | Label | Meaning |
 |---|---|
 | **Normal** | Nothing specific stands out |
-| **To review** | A hint exists (dangerous port, temporary folder, unknown program, blocklist) |
+| **Suspicious** | A hint exists (dangerous port, temporary folder, unknown program, blocklist); the row is tinted |
 | **High** | Your IP blocklist or a dangerous remote port matched |
 
 A flag is a question, not a verdict.
@@ -177,7 +177,7 @@ A flag is a question, not a verdict.
 
 A banner appears: *"N connections deserve a look"*, with two actions:
 
-- **Review** opens the first flagged connection.
+- **Review** (*Examiner*) opens the first flagged connection.
 - **Understand** opens the four-step guide.
 
 The connection panel explains:

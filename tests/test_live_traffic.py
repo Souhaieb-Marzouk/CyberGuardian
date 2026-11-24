@@ -66,6 +66,21 @@ class FakeProcess:
         return FakeIO()
 
 
+
+def make_connection(index: int, risk: str = "info", reasons=None):
+    from core.live_traffic import ConnectionView
+    return ConnectionView(
+        key=f"k{index}", pid=100 + index, app=f"app{index}.exe",
+        exe=r"C:\Program Files\app.exe", username="bob",
+        ppid=4, parent="explorer.exe", cmdline="app.exe", started="",
+        local_ip="192.168.1.10", local_port=50000 + index,
+        remote_ip=f"8.8.4.{index % 200 + 1}", remote_port=443,
+        protocol="TCP", state="ESTABLISHED", family="IPv4",
+        domain="", service="HTTPS", age=10, first_seen=0,
+        is_public=True, is_lan=False, risk=risk, reasons=reasons or [],
+    )
+
+
 class LiveTrafficTests(unittest.TestCase):
     def setUp(self):
         self.tmp = ROOT / "tests" / "_tmp_live"
@@ -237,6 +252,71 @@ class TrafficUiTests(unittest.TestCase):
         dialog = TrafficGuideDialog(LIGHT)
         dialog.show()
         dialog.close()
+
+
+    def test_scroll_position_survives_refresh(self):
+        from ui.studio import LIGHT
+        from ui.traffic import TrafficPage
+        from core.live_traffic import TrafficSnapshot
+        shell = SimpleNamespace(tray=None)
+        page = TrafficPage(LIGHT, shell)
+        try:
+            page.resize(1100, 700)
+            page.show()
+            self.app.processEvents()
+            page.shutdown()
+            page.running = False
+            connections = [make_connection(i) for i in range(120)]
+            snapshot = TrafficSnapshot(
+                connections=connections, download_bps=0, upload_bps=0,
+                total_download=0, total_upload=0, adapter="",
+                adapters=[], timestamp=0, suspicious=0,
+            )
+            page.snapshot_data = snapshot
+            page._last_keys = None
+            page._refresh_table(snapshot)
+            self.app.processEvents()
+            page.table.verticalScrollBar().setValue(12)
+            self.app.processEvents()
+            connections.append(make_connection(999, "high", ["suspicious_port"]))
+            page._last_keys = None
+            page._refresh_table(page.snapshot_data)
+            self.app.processEvents()
+            self.assertEqual(page.table.verticalScrollBar().value(), 12)
+        finally:
+            page.close()
+
+    def test_suspicious_rows_are_tinted_and_labelled(self):
+        from ui.studio import LIGHT
+        from ui.traffic import TrafficPage
+        from core.live_traffic import TrafficSnapshot
+        shell = SimpleNamespace(tray=None)
+        page = TrafficPage(LIGHT, shell)
+        try:
+            page.resize(1100, 700)
+            page.show()
+            self.app.processEvents()
+            page.shutdown()
+            page.running = False
+            suspicious = make_connection(1, "high", ["suspicious_port"])
+            normal = make_connection(2)
+            snapshot = TrafficSnapshot(
+                connections=[suspicious, normal], download_bps=0, upload_bps=0,
+                total_download=0, total_upload=0, adapter="", adapters=[],
+                timestamp=0, suspicious=1,
+            )
+            page.snapshot_data = snapshot
+            page._last_keys = None
+            page._refresh_table(snapshot)
+            self.app.processEvents()
+            risk = page.table.item(0, 0)
+            self.assertIn("Suspicious", risk.text())
+            self.assertTrue(risk.font().bold())
+            self.assertIsNotNone(risk.background())
+            self.assertGreater(risk.background().color().alpha(), 0)
+            self.assertFalse(page.table.item(1, 0).font().bold())
+        finally:
+            page.close()
 
     def test_finding_dialog_initial_tab(self):
         from ui.studio import LIGHT

@@ -231,7 +231,11 @@ class ConnectionDetailDialog(QDialog):
         title = QLabel(app_label(conn))
         title.setStyleSheet("font-size: 22px; font-weight: 700;")
         head.addWidget(title)
-        risk = QLabel(tr(RISK_LABELS.get(conn.risk, "traffic.risk.info")))
+        risk_key = {
+            "high": "traffic.detail.risk_high",
+            "medium": "traffic.detail.risk_medium",
+        }.get(conn.risk, "traffic.detail.risk_info")
+        risk = QLabel(tr(risk_key))
         colour = {"high": t["critical"], "medium": t["medium"], "info": t["accent"]}[conn.risk]
         risk.setStyleSheet(
             f"background: {colour}22; color: {colour}; border-radius: 9px;"
@@ -698,8 +702,8 @@ class TrafficPage(QWidget):
         header_view.setSectionResizeMode(QHeaderView.Fixed)
         header_view.setSectionResizeMode(2, QHeaderView.Stretch)
         for column, width in {
-            0: 72, 1: 160, 3: 90, 4: 95, 5: 95, 6: 64,
-            7: 150, 8: 150, 9: 164,
+            0: 130, 1: 150, 3: 80, 4: 85, 5: 88, 6: 58,
+            7: 135, 8: 135, 9: 160,
         }.items():
             self.table.setColumnWidth(column, width)
         self.table.verticalHeader().setVisible(False)
@@ -707,6 +711,7 @@ class TrafficPage(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
         self.table.doubleClicked.connect(self._open_selected)
         root.addWidget(self.table, 1)
 
@@ -833,6 +838,10 @@ class TrafficPage(QWidget):
         if 0 <= selected < self.table.rowCount():
             item = self.table.item(selected, 2)
             selected_key = item.data(Qt.UserRole) if item else None
+        # Rebuilding the grid used to jump back to the first row on every new
+        # connection.  Remember where the analyst was and restore it afterwards.
+        scroll_y = self.table.verticalScrollBar().value()
+        scroll_x = self.table.horizontalScrollBar().value()
 
         self.table.setUpdatesEnabled(False)
         self.table.setRowCount(0)
@@ -897,6 +906,7 @@ class TrafficPage(QWidget):
             self.table.setCellWidget(row, 9, actions)
             self.table.setRowHeight(row, 34)
 
+            self._tint_row(row, conn)
             self._row_meta[conn.key] = {
                 "conn": conn, "risk": risk_item, "age": age, "dest": destination,
                 "down": down_btn, "up": up_btn,
@@ -909,11 +919,26 @@ class TrafficPage(QWidget):
                     self.table.selectRow(row)
                     break
         self.table.setUpdatesEnabled(True)
+        self.table.verticalScrollBar().setValue(scroll_y)
+        self.table.horizontalScrollBar().setValue(scroll_x)
         self._update_empty()
 
     def _apply_risk(self, item: QTableWidgetItem, conn: ConnectionView):
         item.setText(tr(RISK_LABELS.get(conn.risk, "traffic.risk.info")))
         item.setToolTip("\n".join(tr("traffic.reason." + reason) for reason in conn.reasons))
+        font = item.font()
+        font.setBold(conn.risk != "info")
+        item.setFont(font)
+
+    def _tint_row(self, row: int, conn: ConnectionView):
+        if conn.risk == "info":
+            return
+        tint = QColor(self.t["critical"] if conn.risk == "high" else self.t["medium"])
+        tint.setAlpha(38 if conn.risk == "high" else 26)
+        for column in range(self.table.columnCount()):
+            cell = self.table.item(row, column)
+            if cell is not None:
+                cell.setBackground(tint)
 
     def _block_button(self, conn: ConnectionView, direction: str) -> QPushButton:
         blocked = self.firewall.is_blocked(
