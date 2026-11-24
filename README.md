@@ -6,11 +6,11 @@
 
 **Windows malware detection, threat hunting and incident triage — local-first.**
 
-[![Version](https://img.shields.io/badge/version-1.5.0-2f7f6f?style=flat-square)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.6.0-2f7f6f?style=flat-square)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/license-MIT-2f7f6f?style=flat-square)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-144%20passing-2f7f6f?style=flat-square)](tests/)
+[![Tests](https://img.shields.io/badge/tests-156%20passing-2f7f6f?style=flat-square)](tests/)
 [![Language](https://img.shields.io/badge/UI-English%20%7C%20Fran%C3%A7ais-6b7785?style=flat-square)](#languages)
 
 **Designed & architected by [Souhaieb Marzouk](https://github.com/Souhaieb-Marzouk)**
@@ -39,7 +39,26 @@ VirusTotal lookup.
 |---|---|
 | ![Scans](docs/screenshots/scans-light.png) | ![Finding dialog](docs/screenshots/finding-dialog-light.png) |
 
+| Live traffic | Suspicious connection |
+|---|---|
+| ![Live traffic](docs/screenshots/traffic-light.png) | ![Traffic alert](docs/screenshots/traffic-alert.png) |
+
+More: [guide](docs/screenshots/traffic-guide.png) · [connection details](docs/screenshots/traffic-detail.png)
+
 More: [canaries](docs/screenshots/canaries-light.png) · [About](docs/screenshots/about-dark.png)
+
+## What's new in 1.6.0
+
+- **Live traffic** — a guided, Sniffnet-inspired view of every connection:
+  adapter selection, live throughput chart, filters, process attribution,
+  local-network detection, one-click **VirusTotal** and **AI** triage for
+  external addresses, and per-direction **block download / block upload**
+  firewall toggles.
+- **Beginner-safe by design** — a four-step guide, plain-language risk labels,
+  a "what to do now" banner and a details panel that explains who is talking,
+  where, why it is flagged and what to do next.
+- **Firewall rule management** — every block is a named, auditable Windows
+  Firewall rule with a dedicated dialog to review and remove it.
 
 ## What's new in 1.5.0
 
@@ -72,9 +91,28 @@ Full history: [CHANGELOG.md](CHANGELOG.md) · [release notes](docs/releases/).
 | **Network** | Live TCP/UDP connections, listeners, remote endpoints, C2-style patterns, suspicious ports |
 | **Registry** | Run/RunOnce keys, services, scheduled tasks, Winlogon, persistence locations, encoded payloads |
 | **Activity** | Security, System, PowerShell, Task Scheduler and Defender channels with curated rules and brute-force correlation |
+| **Live traffic** | Real-time connections, adapter throughput, process attribution, per-direction blocking, VirusTotal/AI triage |
 
 Every detection carries structured evidence: process tree, file metadata, network
 five-tuple, registry hive/key/value, or event identity.
+
+### Live traffic
+
+A connection-level network monitor that needs no packet-capture driver:
+
+- pick a network adapter, start monitoring and watch download/upload throughput;
+- see the application, remote endpoint, service, protocol, state and age;
+- filter by Internet, local network, listening services, protocol or risk;
+- flag unknown programs, dangerous ports, temporary-folder binaries and addresses
+  from your blacklist;
+- block **download** (inbound) or **upload** (outbound) with one toggle per
+  connection, then review every rule in the blocking-rules dialog;
+- open **VirusTotal** or **AI analysis** on any external address in one click;
+- an optional country/ASN lookup (explicit, external) and reverse-DNS names.
+
+Raw packet capture/PCAP is intentionally not included: it requires the Npcap
+driver, while CyberGuardian wants to stay dependency-free on Windows. The
+connection-level view gives the SOC-relevant facts without a kernel driver.
 
 ### Triage and response
 
@@ -184,6 +222,9 @@ real files: remove them with **Disarm** before uninstalling or moving the machin
 - Scans, evidence, quarantine and canaries stay on the machine.
 - The AI prompt and VirusTotal lookups send the selected finding (indicator,
   evidence and context) to the provider you configured.
+- The optional country/ASN lookup sends one IP to ipapi.co, only when you ask.
+- Firewall changes are explicit; every rule is named CyberGuardian_* and can be
+  removed from the traffic page.
 - Nothing else is uploaded; there is no telemetry.
 
 ## CLI
@@ -196,6 +237,7 @@ python main.py --cli --process        # processes only
 python main.py --cli --file C:\path   # a file or folder
 python main.py --cli --network
 python main.py --cli --registry
+python main.py --cli --eventlog
 python main.py --help
 ```
 
@@ -207,13 +249,15 @@ CyberGuardian/
 ├── main_studio.py           # Convenience alias for the Studio GUI
 ├── ui/                      # Studio interface, dialogs, localisation kit
 │   ├── studio.py            # Window, pages, scan worker
+│   ├── traffic.py           # Live traffic page, guide, detail, firewall rules
 │   ├── findings.py          # Triage dialog + Findings page
 │   ├── canaries.py          # Canary workspace and incident report
 │   ├── about.py             # About / attribution dialog
 │   ├── design_common.py     # Cards, gauge, fonts, motion helpers
 │   └── tools_dialog.py      # Startup, software, checks, canaries, quarantine
 ├── scanners/                # Process, file, network, registry, event log
-├── core/                    # Health, canaries, software, startup, quarantine…
+├── core/                    # Health, canaries, software, startup, quarantine,
+│                            # live traffic, firewall rules, IP lookup
 ├── threat_intel/            # Reputation APIs and VirusTotal checker
 ├── ai_analysis/             # Provider clients and prompt construction
 ├── reporting/               # HTML/PDF reports and exports

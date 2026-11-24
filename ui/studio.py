@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
 from ui.design_common import Bars, Gauge, load_fonts, micro
 from ui.findings import FindingDialog, FindingsPage
 from ui.canaries import CanariesPage, CanaryReportDialog
+from ui.traffic import TrafficPage
 from ui.about import AboutDialog
 from core import branding
 from utils.i18n import LANGUAGES, current_language, load_language, set_language, tr
@@ -913,12 +914,14 @@ class StudioWindow(QMainWindow):
         self.pages: Dict[str, QWidget] = {}
         self.overview = OverviewPage(self.t, self)
         self.scans = ScansPage(self.t, self)
+        self.traffic = TrafficPage(self.t, self)
         self.tools = ToolsPage(self.t, self)
         self.logs = LogsPage(self.t)
         self.settings = SettingsPage(self.t, self)
         self.findings_page = FindingsPage(self.t, self)
         self.canaries = CanariesPage(self.t, self)
         for key, widget in (("Overview", self.overview), ("Scans", self.scans),
+                            ("Traffic", self.traffic),
                             ("Findings", self.findings_page), ("Canaries", self.canaries),
                             ("Tools", self.tools), ("Logs", self.logs),
                             ("Settings", self.settings)):
@@ -964,7 +967,7 @@ class StudioWindow(QMainWindow):
         layout.addSpacing(14)
 
         self.nav_buttons = {}
-        for key in ("Overview", "Scans", "Findings", "Canaries", "Tools", "Logs"):
+        for key in ("Overview", "Scans", "Traffic", "Findings", "Canaries", "Tools", "Logs"):
             button = QPushButton(tr("nav." + key.lower()))
             button.setProperty("page_key", key)
             button.setObjectName("pill")
@@ -1158,6 +1161,7 @@ class StudioWindow(QMainWindow):
             pass
         try:
             self.canaries.shutdown()
+            self.traffic.shutdown()
             if getattr(self, "tray", None) is not None:
                 self.tray.hide()
         except Exception:

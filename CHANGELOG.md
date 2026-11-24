@@ -3,6 +3,47 @@
 All notable changes to CyberGuardian are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-11-24
+
+### Added
+
+- **Live traffic page** — a guided, Sniffnet-inspired connection monitor:
+  adapter selection, live throughput chart, search and filters (Internet, LAN,
+  listening, protocol, risk), process attribution, reverse DNS and local-network
+  detection.
+- **Beginner guidance** — a four-step network guide, plain-language risk labels,
+  a "connections deserve a look" banner, and a details panel explaining who is
+  talking, where, how and why, with a clear "is this normal?" note.
+- **One-click triage** — VirusTotal and AI buttons on every external endpoint;
+  they open the existing finding dialog on the right tab and start the check
+  automatically.
+- **Per-direction blocking** — independent download (inbound) and upload
+  (outbound) toggles per connection, creating named, auditable Windows Firewall
+  rules, with a rules dialog to review and remove them.
+- **IP enrichment** — opt-in country/ASN lookup with a one-week cache.
+- **Optional notifications** — tray notification for new high-risk connections
+  (30-minute de-duplication).
+- **IP blacklist support** — `data/ip_blacklist.txt` (IP or CIDR per line) is
+  reloaded automatically and marks matching connections as High.
+- **Capture report export** — export the current connection snapshot as CSV or
+  JSON.
+
+### Changed
+
+- `APP_VERSION`/`build.py` bumped to 1.6.0.
+- The traffic page reuses the shared evidence model, AI/VirusTotal caches and
+  HTML exports instead of duplicating triage logic.
+- Documentation (README, user guide, architecture) covers the new page, its
+  firewall semantics and its deliberate connection-level scope.
+
+### Security
+
+- Firewall rules are explicit, named (`CyberGuardian_*`) and removable; the UI
+  warns that a rule applies to every application using that endpoint.
+- IP enrichment is never automatic; it requires a button press and sends only
+  the selected public IP to ipapi.co.
+- No packet-capture driver is installed; CyberGuardian does not capture payloads.
+
 ## [1.5.0] - 2026-11-09
 
 ### Added

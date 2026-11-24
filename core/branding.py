@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 
 APP_NAME = "CyberGuardian"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 TAGLINE = "Local-first malware detection and threat hunting for Windows."
 
 AUTHOR = "Souhaieb Marzouk"
