@@ -198,7 +198,7 @@ old one is closed.
 
 ## Testing
 
-- `tests/` contains 158 unit and headless UI tests.
+- `tests/` contains 160 unit and headless UI tests.
 - Qt runs with `QT_QPA_PLATFORM=offscreen`.
 - `test_ui_buttons.py` clicks every button on the legacy dialog surfaces and fails
   if one raises.

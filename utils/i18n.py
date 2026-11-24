@@ -405,6 +405,8 @@ CATALOG: Dict[str, Dict[str, str]] = {
         "traffic.detail.risk_high": "High risk",
         "traffic.detail.risk_medium": "Suspicious",
         "traffic.detail.risk_info": "Normal",
+        "traffic.state.open": "Open",
+        "traffic.admin_hint": "Some live-traffic features need administrator rights: per-connection bandwidth and firewall blocking. Restart CyberGuardian as administrator to enable them.",
         "canary.title": "Ransomware canaries",
         "canary.intro": (
             "Decoy documents are placed in the folders ransomware encrypts first. "
@@ -847,6 +849,8 @@ CATALOG: Dict[str, Dict[str, str]] = {
         "traffic.detail.risk_high": "Risque élevé",
         "traffic.detail.risk_medium": "Suspect",
         "traffic.detail.risk_info": "Normal",
+        "traffic.state.open": "Ouvert",
+        "traffic.admin_hint": "Certaines fonctions du trafic en direct nécessitent les droits administrateur : le débit par connexion et le blocage par pare-feu. Relancez CyberGuardian en administrateur pour les activer.",
         "canary.title": "Canaris anti-rançongiciel",
         "canary.intro": (
             "Des documents leurres sont placés dans les dossiers que les rançongiciels "
