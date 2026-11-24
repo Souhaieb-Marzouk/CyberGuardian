@@ -18,12 +18,14 @@ contract, a shared evidence model and a Qt interface that never blocks on I/O.
 
 ```
 ui/            Studio window, pages, dialogs, design system, i18n strings
+               (including the live traffic page and its guided dialogs)
   ↓ calls
 scanners/      Process, file, network, registry, event log, memory, realtime
   ↓ produce
 base_scanner   ScanResult / Detection / RiskLevel / ScanStatus
   ↑ consume
-core/          Health, canaries, software, startup, quarantine, reputation
+core/          Health, canaries, software, startup, quarantine, reputation,
+               live traffic, firewall rules, IP enrichment
 threat_intel/  Hash/IP/domain/URL reputation and VirusTotal client
 ai_analysis/   Provider clients, prompt construction, tolerant JSON parsing
 reporting/     HTML/PDF/CSV/JSON reports and exports
@@ -110,6 +112,56 @@ complete key/value pairs.
 caching and rate limiting. The Studio tab filters private IPs and file-like
 "domains", displays verdicts and feeds `IOCResult.to_dict()` into the AI prompt.
 
+
+## Live traffic
+
+`core/live_traffic.py` polls `psutil.net_connections(kind="inet")` once per second,
+attributes every connection to its process (name, executable, user, PID/PPID,
+parent, command line), caches process lookups for ten seconds and resolves
+reverse DNS asynchronously. `psutil.net_io_counters()` provides accurate
+per-adapter throughput; per-connection byte counters are not available without
+packet capture and are deliberately not displayed.
+
+Each `ConnectionView` carries the endpoints, protocol, state, age, adapter,
+reverse name, service guess (port map), LAN/Internet classification and a list of
+risk hints:
+
+- `blacklist` — address or CIDR in `data/ip_blacklist.txt` (reloaded on change),
+- `suspicious_port` — public remote port commonly used by attacks,
+- `user_writable` — executable under `\Temp\`, `\Downloads\` or `Public`,
+- `unknown_process` — no durable image path for a public connection,
+- `exposed_listener` — RDP/VNC/Telnet listening on all interfaces.
+
+Kernel rows (PID 0/4) and loopback traffic are never flagged. The UI translates
+hint codes; nothing user-visible is hard-coded in the backend.
+
+### Firewall rules
+
+`core/firewall.py` creates one named rule per blocked direction:
+
+```
+CyberGuardian_<in|out>_<TCP|UDP>_<ip>_<port>
+```
+
+Rules are added/removed with `netsh advfirewall firewall`, require administrator
+rights, and are persisted in `cache/firewall_rules.json` so the UI can show and
+remove them later. Blocking is endpoint-based (all applications), which is what
+Windows Firewall can enforce without per-process scope.
+
+### IP enrichment
+
+`core/ip_lookup.py` performs an explicit, opt-in `ipapi.co` request (country,
+region, city, ASN/org) and caches the result for a week in
+`cache/ip_lookup.json`. Private addresses are rejected; no lookup is performed
+unless the user presses the button.
+
+### Triage integration
+
+The traffic page builds a `Detection` object with the connection and process
+context and opens the standard `FindingDialog` on the **VirusTotal** or **AI**
+tab (`initial_tab`, `auto_start`). This reuses the existing caches, HTML export
+and AI prompt instead of duplicating triage logic.
+
 ## Localisation
 
 `utils/i18n.py` contains the English and French catalogs (no Qt `.qm` files, so the
@@ -130,6 +182,9 @@ while preserving geometry and page. Canary guidance has a dedicated French catal
 | Timeline snapshots | `cache/timeline.json` |
 | Reports | `reports/` |
 | YARA rules | `yara_rules/` |
+| Firewall rules | `cache/firewall_rules.json` |
+| IP lookup cache | `cache/ip_lookup.json` |
+| IP blacklist | `data/ip_blacklist.txt` |
 
 None of these directories are committed.
 
@@ -143,7 +198,7 @@ old one is closed.
 
 ## Testing
 
-- `tests/` contains 144 unit and headless UI tests.
+- `tests/` contains 156 unit and headless UI tests.
 - Qt runs with `QT_QPA_PLATFORM=offscreen`.
 - `test_ui_buttons.py` clicks every button on the legacy dialog surfaces and fails
   if one raises.

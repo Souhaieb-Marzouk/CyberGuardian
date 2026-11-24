@@ -15,7 +15,7 @@ import webbrowser
 import subprocess
 from typing import Dict, List, Optional
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
@@ -169,7 +169,8 @@ def collect_iocs(detection) -> list:
 class FindingDialog(QDialog):
     """Details, remediation and AI analysis for one detection."""
 
-    def __init__(self, t: Dict, detection, parent=None):
+    def __init__(self, t: Dict, detection, parent=None,
+                 initial_tab: Optional[str] = None, auto_start: bool = False):
         super().__init__(parent)
         self.t = t
         self.detection = detection
@@ -178,6 +179,9 @@ class FindingDialog(QDialog):
         self.vt_result = None
         self.ai_result = None
         self._vt_then_ai = False
+        self.initial_tab = initial_tab
+        self.auto_start = auto_start
+        self._tab_indices = {}
 
         risk = detection.risk_level.value
         color = t.get(risk, t["accent"])
@@ -218,11 +222,12 @@ class FindingDialog(QDialog):
         description.setStyleSheet(f"color: {t['muted']};")
         layout.addWidget(description)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._details_tab(), tr("detail.tab.details"))
-        tabs.addTab(self._remediation_tab(), tr("detail.tab.remediation"))
-        tabs.addTab(self._ai_tab(), tr("detail.tab.ai"))
-        tabs.addTab(self._vt_tab(), tr("detail.tab.vt"))
+        self.tabs = QTabWidget()
+        self._tab_indices["details"] = self.tabs.addTab(self._details_tab(), tr("detail.tab.details"))
+        self._tab_indices["remediation"] = self.tabs.addTab(self._remediation_tab(), tr("detail.tab.remediation"))
+        self._tab_indices["ai"] = self.tabs.addTab(self._ai_tab(), tr("detail.tab.ai"))
+        self._tab_indices["vt"] = self.tabs.addTab(self._vt_tab(), tr("detail.tab.vt"))
+        tabs = self.tabs
         layout.addWidget(tabs, 1)
 
         buttons = QDialogButtonBox()
@@ -241,6 +246,14 @@ class FindingDialog(QDialog):
         layout.addWidget(buttons)
 
         self._restore_cached()
+
+        if self.initial_tab in self._tab_indices:
+            self.tabs.setCurrentIndex(self._tab_indices[self.initial_tab])
+        if self.auto_start:
+            if self.initial_tab == "vt" and self.vt_result is None:
+                QTimer.singleShot(50, self._start_vt)
+            elif self.initial_tab == "ai" and self.ai_result is None:
+                QTimer.singleShot(50, self._analyze)
 
     def _cache_key(self) -> str:
         detection = self.detection

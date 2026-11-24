@@ -27,7 +27,7 @@ for _stream in (sys.stdout, sys.stderr):
 
 # Configuration
 APP_NAME = "CyberGuardian"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 MAIN_SCRIPT = "main.py"
 ICON_PATH = "assets/icon.png"
 

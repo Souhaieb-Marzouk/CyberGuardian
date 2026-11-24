@@ -10,13 +10,14 @@ This guide covers the Studio interface shipped with CyberGuardian 1.5.0.
 4. [Triaging a finding](#triaging-a-finding)
 5. [AI analysis](#ai-analysis)
 6. [VirusTotal](#virustotal)
-7. [Tools](#tools)
-8. [Ransomware canaries](#ransomware-canaries)
-9. [Settings and language](#settings-and-language)
-10. [Exporting](#exporting)
-11. [CLI](#cli)
-12. [Troubleshooting](#troubleshooting)
-13. [Where data is stored](#where-data-is-stored)
+7. [Live traffic](#live-traffic)
+8. [Tools](#tools)
+9. [Ransomware canaries](#ransomware-canaries)
+10. [Settings and language](#settings-and-language)
+11. [Exporting](#exporting)
+12. [CLI](#cli)
+13. [Troubleshooting](#troubleshooting)
+14. [Where data is stored](#where-data-is-stored)
 
 ---
 
@@ -38,6 +39,7 @@ The window has seven pages in the top navigation:
 | **Overview** | Health score, stat tiles, what was checked, findings that need attention |
 | **Scans** | Five scanners with their results tables |
 | **Findings** | Every detection from every scan, with a risk filter |
+| **Traffic** | Live connections, throughput, per-direction blocking, VirusTotal/AI triage |
 | **Canaries** | Ransomware decoys, incident alerts and reports |
 | **Tools** | Startup, software updates, file/link checks, canaries, quarantine |
 | **Logs** | Activity log of scans and actions |
@@ -137,6 +139,93 @@ URLs, domains and public IPs — and checks them against VirusTotal.
   minute; the status line explains this.
 - Results are cached and exportable as HTML.
 - Private IPs and file names are filtered out to protect the quota.
+
+
+## Live traffic
+
+The **Traffic** page is a guided network monitor. It answers four questions in
+plain language: which program is talking, to which address, how, and is it
+normal?
+
+Monitoring starts automatically the first time you open the page. Choose a
+network adapter at the top (or *Toutes les interfaces*), and use **Pause** /
+**Resume** whenever you want.
+
+### What you see
+
+- **Download / Upload** — current throughput of the selected adapter.
+- **Connections** — active connections and listening services.
+- **To review** — connections that match a risk hint.
+- A live chart of the last minute of traffic.
+- A table with the application, remote endpoint, service, protocol, state and
+  age of each connection.
+
+Filters narrow the table by Internet, local network, listening services,
+protocol, risk, or a free-text search (application, IP, domain, port).
+
+The risk labels are deliberately calm:
+
+| Label | Meaning |
+|---|---|
+| **Normal** | Nothing specific stands out |
+| **To review** | A hint exists (dangerous port, temporary folder, unknown program, blocklist) |
+| **High** | Your IP blocklist or a dangerous remote port matched |
+
+A flag is a question, not a verdict.
+
+### When something looks suspicious
+
+A banner appears: *"N connections deserve a look"*, with two actions:
+
+- **Review** opens the first flagged connection.
+- **Understand** opens the four-step guide.
+
+The connection panel explains:
+
+- **Who is talking?** — program, executable path, PID, parent process, user.
+- **Where is it going?** — address, domain (reverse DNS), port and service.
+- **How?** — protocol, state, age.
+- **Why is it flagged?** — the exact hints.
+- **Is it normal?** — a short reminder of how to decide.
+
+From this panel you can:
+
+- **Look up country / ASN** — opt-in external lookup (sends that IP to ipapi.co).
+- **Check on VirusTotal** — opens the VirusTotal tab and starts the check for
+  this external address.
+- **Analyze with AI** — opens the AI analysis for the connection (process tree,
+  command line and endpoint are included).
+
+### Block download or upload
+
+Each row has two independent toggles:
+
+- **Block download ↓** — blocks inbound traffic from that remote endpoint.
+- **Block upload ↑** — blocks outbound traffic to that remote endpoint.
+
+Both create a named Windows Firewall rule (`CyberGuardian_*`) that applies to
+every application using that endpoint, not only the current process. Rules
+survive restarts until removed. Changing them requires administrator rights.
+
+Use **Blocking rules** in the page header to review the active rules and remove
+one, or all of them. Never leave a rule behind if you are not sure why it exists.
+
+### IP blacklist
+
+Create `data/ip_blacklist.txt` with one IP or CIDR per line (`#` for comments).
+Matching connections are marked **High** and notify you. The file is reloaded
+automatically when it changes.
+
+### Limitations
+
+- The page monitors **connections**, not raw packets. PCAP capture would require
+  the Npcap driver, which CyberGuardian does not bundle; use Wireshark or
+  `pktmon` when you need packet-level evidence.
+- Byte counters are accurate per adapter, not per connection: Windows does not
+  expose per-connection totals without capture.
+- Domains come from reverse DNS; a missing name is normal.
+- Firewall rules match a remote address and port. Blocking is intentionally
+  simple and auditable; it is not an application-level proxy.
 
 ## Tools
 

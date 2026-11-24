@@ -42,7 +42,7 @@ python -m unittest discover -s tests -t . -v
 
 The suite is headless: Qt runs with the `offscreen` platform. It covers the
 scanners, YARA precision, localisation, exports, VirusTotal parsing, cancellation,
-the Studio UI button sweep and branding. Current status: 144 tests, 1 skipped.
+the Studio UI button sweep and branding. Current status: 156 tests, 1 skipped.
 
 ## Build the portable executable
 
