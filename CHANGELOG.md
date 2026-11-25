@@ -25,8 +25,25 @@ This project follows [Semantic Versioning](https://semver.org/).
   (30-minute de-duplication).
 - **IP blacklist support** — `data/ip_blacklist.txt` (IP or CIDR per line) is
   reloaded automatically and marks matching connections as High.
+- **Per-connection bandwidth** — download/upload columns powered by Windows
+  TCP ESTATS (administrator), with graceful "—" for UDP and non-elevated runs.
+- **Sortable table** — click Application, Destination, Service, Protocol, State,
+  Download or Upload to sort; scroll position is preserved across refreshes.
+- **Blocking in the Actions column** — VT, AI, Details plus the two directional
+  block toggles, keeping bandwidth visible.
+- **Deeper context** — protocol-aware service names from the Windows service
+  database, Windows service names for svchost processes, listening sockets shown
+  by their bind endpoint, and UDP states shown as Open.
 - **Capture report export** — export the current connection snapshot as CSV or
   JSON.
+
+### Fixed
+
+- The live traffic table no longer jumps back to the first row when new
+  connections arrive: the vertical and horizontal scroll positions are restored
+  after every refresh.
+- Suspicious connections are now tinted (amber/red) and labelled **Suspicious**
+  in the risk column, with a bold label and the reasons in the tooltip.
 
 ### Changed
 

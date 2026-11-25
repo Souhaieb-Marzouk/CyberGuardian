@@ -155,10 +155,12 @@ network adapter at the top (or *Toutes les interfaces*), and use **Pause** /
 
 - **Download / Upload** — current throughput of the selected adapter.
 - **Connections** — active connections and listening services.
-- **To review** — connections that match a risk hint.
+- **Suspicious** — connections that match a risk hint (highlighted row).
 - A live chart of the last minute of traffic.
-- A table with the application, remote endpoint, service, protocol, state and
-  age of each connection.
+- A table with the application, remote endpoint, service, protocol, state,
+  age and **download/upload bandwidth** of each connection. Click a column
+  header to sort by application, destination, service, protocol, state, upload
+  or download; the scroll position is preserved while the table refreshes.
 
 Filters narrow the table by Internet, local network, listening services,
 protocol, risk, or a free-text search (application, IP, domain, port).
@@ -168,7 +170,7 @@ The risk labels are deliberately calm:
 | Label | Meaning |
 |---|---|
 | **Normal** | Nothing specific stands out |
-| **To review** | A hint exists (dangerous port, temporary folder, unknown program, blocklist) |
+| **Suspicious** | A hint exists (dangerous port, temporary folder, unknown program, blocklist); the row is tinted |
 | **High** | Your IP blocklist or a dangerous remote port matched |
 
 A flag is a question, not a verdict.
@@ -177,7 +179,7 @@ A flag is a question, not a verdict.
 
 A banner appears: *"N connections deserve a look"*, with two actions:
 
-- **Review** opens the first flagged connection.
+- **Review** (*Examiner*) opens the first flagged connection.
 - **Understand** opens the four-step guide.
 
 The connection panel explains:
@@ -198,10 +200,11 @@ From this panel you can:
 
 ### Block download or upload
 
-Each row has two independent toggles:
+The **Actions** column of each row has two independent blocking toggles,
+next to **VT**, **AI** and **Details**:
 
-- **Block download ↓** — blocks inbound traffic from that remote endpoint.
-- **Block upload ↑** — blocks outbound traffic to that remote endpoint.
+- **Block ↓** — blocks inbound traffic from that remote endpoint.
+- **Block ↑** — blocks outbound traffic to that remote endpoint.
 
 Both create a named Windows Firewall rule (`CyberGuardian_*`) that applies to
 every application using that endpoint, not only the current process. Rules
@@ -221,8 +224,10 @@ automatically when it changes.
 - The page monitors **connections**, not raw packets. PCAP capture would require
   the Npcap driver, which CyberGuardian does not bundle; use Wireshark or
   `pktmon` when you need packet-level evidence.
-- Byte counters are accurate per adapter, not per connection: Windows does not
-  expose per-connection totals without capture.
+- Per-connection byte counters use Windows TCP ESTATS and require
+  administrator rights; UDP has no per-connection counters, so the bandwidth
+  columns show **—** in those cases. The global download/upload tiles are always
+  accurate for the selected adapter.
 - Domains come from reverse DNS; a missing name is normal.
 - Firewall rules match a remote address and port. Blocking is intentionally
   simple and auditable; it is not an application-level proxy.

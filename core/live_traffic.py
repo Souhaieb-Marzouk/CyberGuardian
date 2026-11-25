@@ -11,12 +11,15 @@ and is it normal?
 
 from __future__ import annotations
 
+import ctypes
 import ipaddress
 import os
 import queue
 import socket
+import struct
 import threading
 import time
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -27,6 +30,118 @@ from utils.config import APP_DIR
 from utils.logging_utils import get_logger
 
 logger = get_logger("core.live_traffic")
+
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+class _MIB_TCPROW(ctypes.Structure):
+    _fields_ = [
+        ("dwState", wintypes.DWORD), ("dwLocalAddr", wintypes.DWORD),
+        ("dwLocalPort", wintypes.DWORD), ("dwRemoteAddr", wintypes.DWORD),
+        ("dwRemotePort", wintypes.DWORD),
+    ]
+
+
+class _MIB_TCP6ROW(ctypes.Structure):
+    _fields_ = [
+        ("ucLocalAddr", ctypes.c_ubyte * 16), ("dwLocalScopeId", wintypes.DWORD),
+        ("dwLocalPort", wintypes.DWORD), ("ucRemoteAddr", ctypes.c_ubyte * 16),
+        ("dwRemoteScopeId", wintypes.DWORD), ("dwRemotePort", wintypes.DWORD),
+        ("dwState", wintypes.DWORD),
+    ]
+
+
+class _ESTATS_DATA_RW(ctypes.Structure):
+    _fields_ = [("EnableCollection", ctypes.c_ubyte)]
+
+
+class _ESTATS_DATA_ROD(ctypes.Structure):
+    _fields_ = [
+        ("DataBytesOut", ctypes.c_ulonglong), ("DataSegsOut", ctypes.c_ulonglong),
+        ("DataBytesIn", ctypes.c_ulonglong), ("DataSegsIn", ctypes.c_ulonglong),
+        ("SegsOut", ctypes.c_ulonglong), ("SegsIn", ctypes.c_ulonglong),
+        ("SoftErrors", wintypes.ULONG), ("SoftErrorReason", wintypes.ULONG),
+        ("SndUna", wintypes.ULONG), ("SndNxt", wintypes.ULONG),
+        ("SndMax", wintypes.ULONG), ("ThruBytesAcked", ctypes.c_ulonglong),
+        ("RcvNxt", wintypes.ULONG), ("ThruBytesReceived", ctypes.c_ulonglong),
+    ]
+
+
+_TCP_STATES = {
+    "CLOSED": 1, "LISTEN": 2, "SYN_SENT": 3, "SYN_RECV": 4, "ESTABLISHED": 5,
+    "FIN_WAIT1": 6, "FIN_WAIT2": 7, "CLOSE_WAIT": 8, "CLOSING": 9,
+    "LAST_ACK": 10, "TIME_WAIT": 11, "DELETE_TCB": 12, "NONE": 1,
+}
+
+
+class TcpByteCounter:
+    """Per-connection TCP byte counters through the Windows IP Helper API."""
+
+    def __init__(self):
+        self._iphlpapi = ctypes.WinDLL("iphlpapi.dll")
+        self._enabled = set()
+        self._can = _is_admin()
+
+    def sample(self, key, local_ip, local_port, remote_ip, remote_port, state):
+        if not self._can or not remote_ip:
+            return None
+        try:
+            if ":" in local_ip or ":" in remote_ip:
+                row = self._row6(local_ip, local_port, remote_ip, remote_port, state)
+                get = self._iphlpapi.GetPerTcp6ConnectionEStats
+                setter = self._iphlpapi.SetPerTcp6ConnectionEStats
+            else:
+                row = self._row4(local_ip, local_port, remote_ip, remote_port, state)
+                get = self._iphlpapi.GetPerTcpConnectionEStats
+                setter = self._iphlpapi.SetPerTcpConnectionEStats
+        except Exception:
+            return None
+
+        if key not in self._enabled:
+            rw = _ESTATS_DATA_RW(1)
+            result = setter(
+                ctypes.byref(row), 1,
+                ctypes.cast(ctypes.byref(rw), ctypes.POINTER(ctypes.c_ubyte)),
+                0, ctypes.sizeof(rw), None, 0, 0, None, 0, 0,
+            )
+            if result != 0:
+                return None
+            self._enabled.add(key)
+
+        rod = _ESTATS_DATA_ROD()
+        result = get(
+            ctypes.byref(row), 1, None, 0, 0, None, 0, 0,
+            ctypes.cast(ctypes.byref(rod), ctypes.POINTER(ctypes.c_ubyte)),
+            0, ctypes.sizeof(rod),
+        )
+        if result != 0:
+            return None
+        return (int(rod.DataBytesIn), int(rod.DataBytesOut))
+
+    @staticmethod
+    def _row4(local_ip, local_port, remote_ip, remote_port, state):
+        return _MIB_TCPROW(
+            _TCP_STATES.get((state or "").upper(), 5),
+            struct.unpack("<I", socket.inet_aton(local_ip))[0],
+            socket.htons(int(local_port)),
+            struct.unpack("<I", socket.inet_aton(remote_ip))[0],
+            socket.htons(int(remote_port)),
+        )
+
+    @staticmethod
+    def _row6(local_ip, local_port, remote_ip, remote_port, state):
+        local = socket.inet_pton(socket.AF_INET6, local_ip)
+        remote = socket.inet_pton(socket.AF_INET6, remote_ip)
+        return _MIB_TCP6ROW(
+            (ctypes.c_ubyte * 16)(*local), 0, socket.htons(int(local_port)),
+            (ctypes.c_ubyte * 16)(*remote), 0, socket.htons(int(remote_port)),
+            _TCP_STATES.get((state or "").upper(), 5),
+        )
+
 
 SERVICE_PORTS = {
     20: "FTP-data", 21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
@@ -56,6 +171,7 @@ class ProcessContext:
     ppid: int = 0
     parent: str = ""
     cmdline: str = ""
+    windows_service: str = ""
 
 
 @dataclass
@@ -88,6 +204,8 @@ class ConnectionView:
     up_rate: float = 0.0
     blocked_down: bool = False
     blocked_up: bool = False
+    rates_known: bool = False
+    windows_service: str = ""
 
     @property
     def remote_label(self) -> str:
@@ -95,6 +213,10 @@ class ConnectionView:
             host = self.domain or self.remote_ip
             port = self.remote_port
             return f"{host}:{port}" if port else host
+        if self.local_ip:
+            # Listening sockets have no peer: show the bind endpoint instead of
+            # leaving the destination column empty.
+            return f"{self.local_ip}:{self.local_port}"
         return "—"
 
     @property
@@ -134,8 +256,13 @@ def _is_public(ip: str) -> bool:
                 or address.is_reserved or address.is_multicast or address.is_unspecified)
 
 
-def _service(port: int) -> str:
-    return SERVICE_PORTS.get(port, "")
+def _service(port: int, protocol: str = "tcp") -> str:
+    if port in SERVICE_PORTS:
+        return SERVICE_PORTS[port]
+    try:
+        return socket.getservbyport(int(port), protocol.lower()).capitalize()
+    except (OSError, ValueError):
+        return ""
 
 
 class TrafficMonitor:
@@ -154,6 +281,10 @@ class TrafficMonitor:
         self._adapter = ""
         self._adapter_counters: Optional[Tuple[float, int, int]] = None
         self._last_total = (0, 0)
+        self._tcp_counter = TcpByteCounter()
+        self._byte_cache: Dict[str, Tuple[float, int, int]] = {}
+        self._windows_services: Dict[int, str] = {}
+        self._services_checked = 0.0
         self._resolver_queue: "queue.Queue[str]" = queue.Queue()
         self._resolver_cache: Dict[str, str] = {}
         self._resolver_started = False
@@ -234,6 +365,7 @@ class TrafficMonitor:
                 context.cmdline = " ".join(proc.cmdline())
             except Exception:
                 context.cmdline = ""
+            context.windows_service = self._windows_service(pid)
         except Exception:
             pass
         self._proc_cache[pid] = context
@@ -245,6 +377,25 @@ class TrafficMonitor:
                 if self._proc_checked.get(key, 0) > cut
             }
         return context
+
+    def _windows_service(self, pid: int) -> str:
+        """Map a PID to its Windows service, cached for a minute."""
+        now = time.time()
+        if now - self._services_checked > 60:
+            mapping: Dict[int, str] = {}
+            try:
+                for service in psutil.win_service_iter():
+                    try:
+                        service_pid = service.pid()
+                        if service_pid:
+                            mapping[service_pid] = f"{service.name()} ({service.display_name()})"
+                    except Exception:
+                        continue
+            except Exception:
+                mapping = {}
+            self._windows_services = mapping
+            self._services_checked = now
+        return self._windows_services.get(pid, "")
 
     def _process_rates(self, pid: int, now: float):
         try:
@@ -358,9 +509,9 @@ class TrafficMonitor:
             self._last_seen[key] = now
             pid = conn.pid or 0
             proc = self._process(pid) if pid else ProcessContext(0, "?", "", "", "")
-            # Per-connection byte counters need packet capture; system-wide rates
-            # are accurate, per-process disk I/O is not network traffic.
-            read_rate, write_rate = 0.0, 0.0
+            protocol = "TCP" if conn.type == socket.SOCK_STREAM else "UDP"
+            down_rate = up_rate = 0.0
+            rates_known = False
             remote_ip = conn.raddr.ip if conn.raddr else ""
             remote_port = conn.raddr.port if conn.raddr else 0
             local_ip = conn.laddr.ip if conn.laddr else ""
@@ -400,21 +551,34 @@ class TrafficMonitor:
             if system_row and pid not in (0, 4):
                 app_name = "Unknown"
 
+            if protocol == "TCP" and remote_ip:
+                sample = self._tcp_counter.sample(
+                    key, local_ip, local_port, remote_ip, remote_port, conn.status
+                )
+                if sample is not None:
+                    rates_known = True
+                    previous = self._byte_cache.get(key)
+                    self._byte_cache[key] = (now, sample[0], sample[1])
+                    if previous:
+                        elapsed = max(0.001, now - previous[0])
+                        down_rate = max(0.0, (sample[0] - previous[1]) / elapsed)
+                        up_rate = max(0.0, (sample[1] - previous[2]) / elapsed)
+
             connections.append(ConnectionView(
                 key=key, pid=pid, app=app_name,
                 exe=proc.exe, username=proc.username,
                 ppid=proc.ppid, parent=proc.parent, cmdline=proc.cmdline,
-                started=proc.started,
+                started=proc.started, windows_service=proc.windows_service,
                 local_ip=local_ip, local_port=local_port,
                 remote_ip=remote_ip, remote_port=remote_port,
-                protocol="TCP" if conn.type == socket.SOCK_STREAM else "UDP",
+                protocol=protocol,
                 state=conn.status or ("LISTEN" if not remote_ip else ""),
                 family="IPv6" if ":" in (local_ip or remote_ip) else "IPv4",
                 domain=self._resolve(remote_ip) if public else "",
-                service=_service(remote_port) or _service(local_port),
+                service=_service(remote_port, protocol) or _service(local_port, protocol),
                 age=max(0.0, now - first), first_seen=first,
                 is_public=public, is_lan=lan, risk=risk, reasons=reasons,
-                down_rate=read_rate, up_rate=write_rate,
+                down_rate=down_rate, up_rate=up_rate, rates_known=rates_known,
             ))
 
         # drop state for connections gone for a while
@@ -422,6 +586,7 @@ class TrafficMonitor:
             if key not in seen_keys and now - self._last_seen.get(key, now) > 60:
                 self._first_seen.pop(key, None)
                 self._last_seen.pop(key, None)
+                self._byte_cache.pop(key, None)
 
         connections.sort(key=lambda item: (
             {"high": 0, "medium": 1, "info": 2}.get(item.risk, 3),

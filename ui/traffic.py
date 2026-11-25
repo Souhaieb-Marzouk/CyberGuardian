@@ -41,7 +41,10 @@ STATE_KEYS = {
     "FIN_WAIT2": "traffic.state.closing",
     "SYN_SENT": "traffic.state.connecting",
     "SYN_RECV": "traffic.state.connecting",
-    "NONE": "traffic.state.none",
+    "NONE": "traffic.state.open",
+    "SYN_RECV": "traffic.state.connecting",
+    "LAST_ACK": "traffic.state.closing",
+    "DELETE_TCB": "traffic.state.closing",
 }
 
 
@@ -231,7 +234,11 @@ class ConnectionDetailDialog(QDialog):
         title = QLabel(app_label(conn))
         title.setStyleSheet("font-size: 22px; font-weight: 700;")
         head.addWidget(title)
-        risk = QLabel(tr(RISK_LABELS.get(conn.risk, "traffic.risk.info")))
+        risk_key = {
+            "high": "traffic.detail.risk_high",
+            "medium": "traffic.detail.risk_medium",
+        }.get(conn.risk, "traffic.detail.risk_info")
+        risk = QLabel(tr(risk_key))
         colour = {"high": t["critical"], "medium": t["medium"], "info": t["accent"]}[conn.risk]
         risk.setStyleSheet(
             f"background: {colour}22; color: {colour}; border-radius: 9px;"
@@ -260,7 +267,7 @@ class ConnectionDetailDialog(QDialog):
             (tr("col.parent"), conn.parent or "—"),
             (tr("col.user"), conn.username or "—"),
             (tr("col.path"), conn.exe or "—"),
-        ]))
+        ] + ([("Windows service", conn.windows_service)] if conn.windows_service else [])))
         where_rows = [
             (tr("traffic.col.destination"), conn.remote_label),
             (tr("traffic.domain"), conn.domain or "—"),
@@ -568,6 +575,20 @@ class TrafficPage(QWidget):
         header.addWidget(self.start_btn)
         root.addLayout(header)
 
+        if not is_admin():
+            hint = QFrame()
+            hint.setStyleSheet(
+                "QFrame { background: #fdf5df; border: 1px solid #e7d39a;"
+                " border-radius: 10px; }"
+            )
+            hint_layout = QHBoxLayout(hint)
+            hint_layout.setContentsMargins(14, 8, 14, 8)
+            hint_text = QLabel(tr("traffic.admin_hint"))
+            hint_text.setWordWrap(True)
+            hint_text.setStyleSheet("color: #6b4d0f; font-size: 11px;")
+            hint_layout.addWidget(hint_text)
+            root.addWidget(hint)
+
         stats = QHBoxLayout()
         stats.setSpacing(10)
         self.stat_values = {}
@@ -692,14 +713,20 @@ class TrafficPage(QWidget):
             tr("traffic.col.risk"), tr("traffic.col.app"), tr("traffic.col.destination"),
             tr("traffic.col.service"), tr("traffic.col.protocol"),
             tr("traffic.col.state"), tr("traffic.col.age"),
-            tr("traffic.col.block_down"), tr("traffic.col.block_up"), tr("traffic.col.actions"),
+            tr("traffic.stat.down"), tr("traffic.stat.up"), tr("traffic.col.actions"),
         ])
         header_view = self.table.horizontalHeader()
         header_view.setSectionResizeMode(QHeaderView.Fixed)
         header_view.setSectionResizeMode(2, QHeaderView.Stretch)
+        header_view.setSectionsClickable(True)
+        header_view.setSortIndicatorShown(True)
+        header_view.sectionClicked.connect(self._sort_by)
+        self._sort_column = 1
+        self._sort_ascending = True
+        header_view.setSortIndicator(1, Qt.AscendingOrder)
         for column, width in {
-            0: 72, 1: 160, 3: 90, 4: 95, 5: 95, 6: 64,
-            7: 150, 8: 150, 9: 164,
+            0: 104, 1: 140, 3: 80, 4: 84, 5: 82, 6: 52,
+            7: 88, 8: 88, 9: 300,
         }.items():
             self.table.setColumnWidth(column, width)
         self.table.verticalHeader().setVisible(False)
@@ -707,6 +734,7 @@ class TrafficPage(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setShowGrid(False)
+        self.table.setWordWrap(False)
         self.table.doubleClicked.connect(self._open_selected)
         root.addWidget(self.table, 1)
 
@@ -812,7 +840,7 @@ class TrafficPage(QWidget):
             self.banner_title.setText(tr("traffic.banner.title", count=snap.suspicious))
 
     def _refresh_table(self, snap: TrafficSnapshot):
-        connections = self._filtered(snap.connections)
+        connections = self._sorted(self._filtered(snap.connections))
         keys = tuple(conn.key for conn in connections)
         if keys == self._last_keys:
             for conn in connections:
@@ -823,6 +851,22 @@ class TrafficPage(QWidget):
                 meta["age"].setText(_fmt_age(conn.age))
                 if "dest" in meta:
                     meta["dest"].setText(conn.remote_label)
+                if "down_item" in meta:
+                    meta["down_item"].setText(
+                        _fmt_rate(conn.down_rate) if conn.rates_known else "—"
+                    )
+                    meta["down_item"].setToolTip(
+                        tr("traffic.rates.unknown") if not conn.rates_known
+                        else _fmt_rate(conn.down_rate)
+                    )
+                if "up_item" in meta:
+                    meta["up_item"].setText(
+                        _fmt_rate(conn.up_rate) if conn.rates_known else "—"
+                    )
+                    meta["up_item"].setToolTip(
+                        tr("traffic.rates.unknown") if not conn.rates_known
+                        else _fmt_rate(conn.up_rate)
+                    )
                 self._apply_risk(meta["risk"], conn)
             self._update_empty()
             return
@@ -833,6 +877,10 @@ class TrafficPage(QWidget):
         if 0 <= selected < self.table.rowCount():
             item = self.table.item(selected, 2)
             selected_key = item.data(Qt.UserRole) if item else None
+        # Rebuilding the grid used to jump back to the first row on every new
+        # connection.  Remember where the analyst was and restore it afterwards.
+        scroll_y = self.table.verticalScrollBar().value()
+        scroll_x = self.table.horizontalScrollBar().value()
 
         self.table.setUpdatesEnabled(False)
         self.table.setRowCount(0)
@@ -849,7 +897,10 @@ class TrafficPage(QWidget):
             self._apply_risk(risk_item, conn)
 
             app = QTableWidgetItem(app_label(conn))
-            app.setToolTip(conn.exe or conn.cmdline)
+            app_tip = conn.exe or conn.cmdline
+            if conn.windows_service:
+                app_tip = f"{app_tip}\n{conn.windows_service}"
+            app.setToolTip(app_tip)
             self.table.setItem(row, 1, app)
 
             destination = QTableWidgetItem(conn.remote_label)
@@ -867,15 +918,31 @@ class TrafficPage(QWidget):
             age = QTableWidgetItem(_fmt_age(conn.age))
             self.table.setItem(row, 6, age)
 
-            down_btn = self._block_button(conn, "in")
-            self.table.setCellWidget(row, 7, down_btn)
-            up_btn = self._block_button(conn, "out")
-            self.table.setCellWidget(row, 8, up_btn)
+            down_item = QTableWidgetItem(
+                _fmt_rate(conn.down_rate) if conn.rates_known else "—"
+            )
+            down_item.setToolTip(
+                tr("traffic.rates.unknown") if not conn.rates_known
+                else _fmt_rate(conn.down_rate)
+            )
+            self.table.setItem(row, 7, down_item)
+            up_item = QTableWidgetItem(
+                _fmt_rate(conn.up_rate) if conn.rates_known else "—"
+            )
+            up_item.setToolTip(
+                tr("traffic.rates.unknown") if not conn.rates_known
+                else _fmt_rate(conn.up_rate)
+            )
+            self.table.setItem(row, 8, up_item)
 
             actions = QWidget()
             action_layout = QHBoxLayout(actions)
             action_layout.setContentsMargins(2, 2, 2, 2)
             action_layout.setSpacing(3)
+            down_btn = self._block_button(conn, "in")
+            action_layout.addWidget(down_btn)
+            up_btn = self._block_button(conn, "out")
+            action_layout.addWidget(up_btn)
             for text, callback in (
                 (tr("traffic.action.vt"), lambda _=False, c=conn: self.open_finding(c, "vt")),
                 (tr("traffic.action.ai"), lambda _=False, c=conn: self.open_finding(c, "ai")),
@@ -897,9 +964,11 @@ class TrafficPage(QWidget):
             self.table.setCellWidget(row, 9, actions)
             self.table.setRowHeight(row, 34)
 
+            self._tint_row(row, conn)
             self._row_meta[conn.key] = {
                 "conn": conn, "risk": risk_item, "age": age, "dest": destination,
                 "down": down_btn, "up": up_btn,
+                "down_item": down_item, "up_item": up_item,
             }
 
         if selected_key:
@@ -909,11 +978,69 @@ class TrafficPage(QWidget):
                     self.table.selectRow(row)
                     break
         self.table.setUpdatesEnabled(True)
+        self.table.verticalScrollBar().setValue(scroll_y)
+        self.table.horizontalScrollBar().setValue(scroll_x)
         self._update_empty()
+
+    def _sort_by(self, column: int):
+        if column == 9:
+            return
+        if column == self._sort_column:
+            self._sort_ascending = not self._sort_ascending
+        else:
+            self._sort_column = column
+            self._sort_ascending = True
+        self.table.horizontalHeader().setSortIndicator(
+            column, Qt.AscendingOrder if self._sort_ascending else Qt.DescendingOrder
+        )
+        self._last_keys = None
+        if self.snapshot_data:
+            self._refresh_table(self.snapshot_data)
+
+    def _sort_value(self, column: int, conn: ConnectionView):
+        if column == 0:
+            return {"high": 0, "medium": 1}.get(conn.risk, 2)
+        if column == 1:
+            return app_label(conn).lower()
+        if column == 2:
+            return (not bool(conn.remote_ip), conn.remote_label.lower())
+        if column == 3:
+            return (conn.service or "").lower()
+        if column == 4:
+            return conn.protocol
+        if column == 5:
+            return _state_label(conn.state)
+        if column == 6:
+            return conn.age
+        if column == 7:
+            return conn.down_rate if conn.rates_known else -1.0
+        if column == 8:
+            return conn.up_rate if conn.rates_known else -1.0
+        return ""
+
+    def _sorted(self, connections):
+        return sorted(
+            connections,
+            key=lambda conn: self._sort_value(self._sort_column, conn),
+            reverse=not self._sort_ascending,
+        )
 
     def _apply_risk(self, item: QTableWidgetItem, conn: ConnectionView):
         item.setText(tr(RISK_LABELS.get(conn.risk, "traffic.risk.info")))
         item.setToolTip("\n".join(tr("traffic.reason." + reason) for reason in conn.reasons))
+        font = item.font()
+        font.setBold(conn.risk != "info")
+        item.setFont(font)
+
+    def _tint_row(self, row: int, conn: ConnectionView):
+        if conn.risk == "info":
+            return
+        tint = QColor(self.t["critical"] if conn.risk == "high" else self.t["medium"])
+        tint.setAlpha(38 if conn.risk == "high" else 26)
+        for column in range(self.table.columnCount()):
+            cell = self.table.item(row, column)
+            if cell is not None:
+                cell.setBackground(tint)
 
     def _block_button(self, conn: ConnectionView, direction: str) -> QPushButton:
         blocked = self.firewall.is_blocked(
@@ -1098,7 +1225,7 @@ class TrafficPage(QWidget):
         )
         if not path:
             return
-        connections = self._filtered(self.snapshot_data.connections)
+        connections = self._sorted(self._filtered(self.snapshot_data.connections))
         try:
             if path.lower().endswith(".json"):
                 payload = [

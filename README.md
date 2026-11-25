@@ -1,4 +1,4 @@
-# CyberGuardian
+﻿# CyberGuardian
 
 <div align="center">
 
@@ -10,7 +10,7 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4?style=flat-square&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/license-MIT-2f7f6f?style=flat-square)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-156%20passing-2f7f6f?style=flat-square)](tests/)
+[![Tests](https://img.shields.io/badge/tests-160%20passing-2f7f6f?style=flat-square)](tests/)
 [![Language](https://img.shields.io/badge/UI-English%20%7C%20Fran%C3%A7ais-6b7785?style=flat-square)](#languages)
 
 **Designed & architected by [Souhaieb Marzouk](https://github.com/Souhaieb-Marzouk)**
@@ -101,8 +101,10 @@ five-tuple, registry hive/key/value, or event identity.
 A connection-level network monitor that needs no packet-capture driver:
 
 - pick a network adapter, start monitoring and watch download/upload throughput;
-- see the application, remote endpoint, service, protocol, state and age;
-- filter by Internet, local network, listening services, protocol or risk;
+- see the application, remote endpoint, service, protocol, state, age and
+  per-connection **download/upload bandwidth** (TCP, administrator);
+- filter by Internet, local network, listening services, protocol or risk, and
+  sort by application, destination, service, protocol, state or bandwidth;
 - flag unknown programs, dangerous ports, temporary-folder binaries and addresses
   from your blacklist;
 - block **download** (inbound) or **upload** (outbound) with one toggle per
